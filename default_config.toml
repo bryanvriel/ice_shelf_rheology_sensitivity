@@ -1,0 +1,73 @@
+
+output_dir = "config_default"
+
+along_flow_distance_file = "along_flow_distance.tif"
+shelf_coords_file = "coords_rutford_simplified_shelf.txt"
+warmup_velocity_file = "grids_warmup.h5"
+output_file = "dirichlet_random.h5"
+
+scale_velocity = false
+mod_margins = true
+along_modulate = false
+
+plot = true
+n_plot_samples = 40
+
+[data]
+u_sigma = 10.0
+v_sigma = 10.0
+
+[rheology]
+exp_in = 2.0
+exp_out = 4.0
+exp_tau = 9e3
+exp_center = 45.0e3
+
+B0 = 0.625
+B_rifts = [0.7, 0.6]
+
+smb_in = -10.0
+smb_out = -1.0
+
+T_in = -25.0
+T_out = -20.0
+n_amp = 1.0
+
+D_ref = 0.0
+side_friction = 0.02
+
+[emulator]
+n_partition = 44
+
+[mcmc]
+use_lowrank = false
+u_sigma = 5.0
+v_sigma = 5.0
+u_emulator_sigma = 5.0
+v_emulator_sigma = 5.0
+
+[inverse]
+lr_schedule = [
+    [0, 0.002],
+    [100, 0.001],
+    [1000, 0.0005],
+    [3000, 0.0003],
+]
+n_iter = 4000
+bfgs_factr = 100.0
+joint = true
+nll_scale = 1000.0
+precondition = false
+objective_scale = 1.0
+penalties_B = [1.0, 1000.0]
+penalties_n = [1.0, 1000.0]
+meshfile = "aux/rutford_inverse_2km.msh"
+opt_type = "adabelief"
+
+[raster_files]
+r_vx0 = "rutford_smooth_vx.tif"
+r_vy0 = "rutford_smooth_vy.tif"
+r_dvx = "rutford_smooth_amp_vx.tif"
+r_dvy = "rutford_smooth_amp_vy.tif"
+r_dist = "along_flow_distance.tif"
+r_dist_perp = "across_flow_distance.tif"
