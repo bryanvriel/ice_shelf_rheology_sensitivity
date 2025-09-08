@@ -1,7 +1,6 @@
 #-*- coding: utf-8 -*-
 
 import numpy as np
-import warnings
 import h5py
 import os
 
@@ -11,6 +10,7 @@ import icepack
 from icepack.calculus import grad
 import rasterio
 import models
+from utilities import coordinate_values
 
 import cryogen
 from cryogen import interpolate
@@ -19,17 +19,6 @@ def inv_norm_tanh(θ, low=0.1, high=5.0):
     A = firedrake.Constant(0.5 * (high - low))
     C0 = firedrake.Constant(0.5 * (high + low))
     return A * firedrake.tanh(θ) + C0
-
-
-def coordinate_values(Q):
-    mesh = Q.mesh()
-    element = Q.ufl_element()
-    V = firedrake.VectorFunctionSpace(mesh, element)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        out = firedrake.interpolate(mesh.coordinates, V).dat.data_ro
-    return out
-
 
 def make_mesh(meshfile=None, comm=None, mesh_span=None, mesh_spacing=None):
     if comm is not None:
