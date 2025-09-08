@@ -117,82 +117,96 @@ class CustomIceShelf(icepack.models.IceShelf):
         super().__init__(viscosity=viscosity, terminus=terminus)
 
 
+# Solver option constructors -------------------------------------------------
+
+
+def _icepack_opts(dirichlet_ids, side_wall_ids, tol=1e-8, maxiter=100):
+    return {
+        "dirichlet_ids": dirichlet_ids,
+        "side_wall_ids": side_wall_ids,
+        "diagnostic_solver_type": "icepack",
+        "tolerance": tol,
+        "diagnostic_solver_parameters": {
+            "tolerance": tol,
+            "max_iterations": maxiter,
+        },
+    }
+
+
+def _petsc_opts(dirichlet_ids, side_wall_ids, **_):
+    return {
+        "dirichlet_ids": dirichlet_ids,
+        "side_wall_ids": side_wall_ids,
+        "diagnostic_solver_type": "petsc",
+        "diagnostic_solver_parameters": {
+            "snes_linesearch_type": "bt",
+            "snes_max_it": 200,
+        },
+    }
+
+
+def _trust_opts(dirichlet_ids, side_wall_ids, **_):
+    return {
+        "dirichlet_ids": dirichlet_ids,
+        "side_wall_ids": side_wall_ids,
+        "diagnostic_solver_type": "petsc",
+        "diagnostic_solver_parameters": {
+            "snes_type": "newtontr",
+            "snes_max_it": 200,
+        },
+    }
+
+
+def _cp_opts(dirichlet_ids, side_wall_ids, **_):
+    return {
+        "dirichlet_ids": dirichlet_ids,
+        "side_wall_ids": side_wall_ids,
+        "diagnostic_solver_type": "petsc",
+        "diagnostic_solver_parameters": {
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "snes_line_search_type": "cp",
+        },
+    }
+
+
+def _multigrid_opts(dirichlet_ids, side_wall_ids, **_):
+    return {
+        "dirichlet_ids": dirichlet_ids,
+        "side_wall_ids": side_wall_ids,
+        "diagnostic_solver_type": "petsc",
+        "diagnostic_solver_parameters": {
+            "ksp_type": "cg",
+            "pc_type": "mg",
+            "pc_mg_cycle_type": "w",
+            "snes_line_search_type": "cp",
+        },
+    }
+
+
+SOLVER_OPTS = {
+    "icepack": _icepack_opts,
+    "petsc": _petsc_opts,
+    "trust": _trust_opts,
+    "cp": _cp_opts,
+    "multigrid": _multigrid_opts,
+}
+
+
 def create_solver(
     model, solver_type, dirichlet_ids=[], side_wall_ids=[], tol=1e-8, maxiter=100
 ):
 
-    # Construct the solver options
-    if solver_type == "icepack":
-        opts = {
-            "dirichlet_ids": dirichlet_ids,
-            "side_wall_ids": side_wall_ids,
-            "diagnostic_solver_type": "icepack",
-            "tolerance": tol,
-            "diagnostic_solver_parameters": {
-                "tolerance": tol,
-                "max_iterations": maxiter,
-                # "ksp_type": "preonly",
-                # "pc_type": "lu",
-                # "pc_factor_mat_solver_type": "mumps",
-            },
-            # "prognostic_solver_parameters": {
-            #    "ksp_type": "gmres",
-            #    "pc_type": "ilu",
-            # },
-        }
-    elif solver_type == "petsc":
-        opts = {
-            "dirichlet_ids": dirichlet_ids,
-            "side_wall_ids": side_wall_ids,
-            "diagnostic_solver_type": "petsc",
-            "diagnostic_solver_parameters": {
-                "snes_linesearch_type": "bt",
-                "snes_max_it": 200,
-            },
-        }
-    elif solver_type == "trust":
-        opts = {
-            "dirichlet_ids": dirichlet_ids,
-            "side_wall_ids": side_wall_ids,
-            "diagnostic_solver_type": "petsc",
-            "diagnostic_solver_parameters": {
-                "snes_type": "newtontr",
-                "snes_max_it": 200,
-                # "ksp_type": "gmres",
-                # "pc_type": "lu",
-                # "pc_factor_mat_solver_type": "mumps",
-            },
-            # "prognostic_solver_parameters": {
-            #    "ksp_type": "gmres",
-            #    "pc_type": "ilu",
-            # },
-        }
-    elif solver_type == "cp":
-        opts = {
-            "dirichlet_ids": dirichlet_ids,
-            "side_wall_ids": side_wall_ids,
-            "diagnostic_solver_type": "petsc",
-            "diagnostic_solver_parameters": {
-                "ksp_type": "preonly",
-                "pc_type": "lu",
-                "pc_factor_mat_solver_type": "mumps",
-                "snes_line_search_type": "cp",
-            },
-        }
-    elif solver_type == "multigrid":
-        opts = {
-            "dirichlet_ids": dirichlet_ids,
-            "side_wall_ids": side_wall_ids,
-            "diagnostic_solver_type": "petsc",
-            "diagnostic_solver_parameters": {
-                "ksp_type": "cg",
-                "pc_type": "mg",
-                "pc_mg_cycle_type": "w",
-                "snes_line_search_type": "cp",
-            },
-        }
-    else:
-        raise NotImplementedError("Unsupported solver.")
+    try:
+        opts = SOLVER_OPTS[solver_type](
+            dirichlet_ids=dirichlet_ids,
+            side_wall_ids=side_wall_ids,
+            tol=tol,
+            maxiter=maxiter,
+        )
+    except KeyError:
+        raise KeyError(f"Unsupported solver type: {solver_type}")
 
     # Create the solver
     return icepack.solvers.FlowSolver(model, **opts), opts
