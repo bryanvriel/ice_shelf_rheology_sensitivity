@@ -5,9 +5,9 @@ from matplotlib.path import Path
 import scipy.ndimage as ndimage
 from tqdm import tqdm
 import h5py
+import warnings
 
 import firedrake
-from firedrake.__future__ import interpolate
 
 
 def init_function_spaces(mesh, degree=2):
@@ -16,10 +16,19 @@ def init_function_spaces(mesh, degree=2):
     return Q, V
 
 def coordinate_values(Q):
+    """Return the coordinates associated with a function space.
+
+    Firedrake's ``interpolate`` emits a ``FutureWarning`` for the legacy API.
+    The warning is suppressed here to keep log output clean.
+    """
+
     mesh = Q.mesh()
     element = Q.ufl_element()
     V = firedrake.VectorFunctionSpace(mesh, element)
-    return firedrake.assemble(interpolate(mesh.coordinates, V)).dat.data_ro
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        out = firedrake.interpolate(mesh.coordinates, V).dat.data_ro
+    return out
 
 
 class NumpyConverter:
