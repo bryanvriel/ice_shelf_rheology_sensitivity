@@ -4,6 +4,7 @@ import numpy as np
 import warnings
 import h5py
 import os
+from typing import Optional, Tuple
 
 import firedrake
 from firedrake import inner
@@ -149,13 +150,51 @@ class IceShelfProblem:
 
         self._obs_init = False
 
-    def load_observations(self, data_file, Nt=None):
+    def load_observations(self, data_file, Nt: Optional[int] = None):
+        """Load observation fields defined on a structured grid.
+
+        Parameters
+        ----------
+        data_file:
+            Path to an HDF5 file containing the observation fields.
+        Nt:
+            Number of time epochs to load. If ``None``, all epochs are used.
+        """
 
         mesh_coords = (self.coords[:, 0], self.coords[:, 1])
 
-        def _interp_to_mesh(array, grid_coords):
-            """Simple interpolation"""
+        def _interp_to_mesh(array: np.ndarray,
+                            grid_coords: Tuple[np.ndarray, np.ndarray]) -> np.ndarray:
+            """Simple interpolation of ``array`` onto the mesh coordinates."""
             return interpolate.interp(array, grid_coords, mesh_coords)
+
+        def _interp_field(field_array: np.ndarray,
+                          grid_coords: Tuple[np.ndarray, np.ndarray],
+                          target_fn: firedrake.Function) -> None:
+            """Interpolate ``field_array`` to ``target_fn``'s mesh.
+
+            Parameters
+            ----------
+            field_array:
+                ``(Ny, Nx)`` array for scalar targets or ``(2, Ny, Nx)`` for
+                two-component vector targets.
+            grid_coords:
+                Tuple of ``(x, y)`` coordinate arrays defining ``field_array``.
+            target_fn:
+                Firedrake function whose ``.dat.data`` will be populated with
+                the interpolated values. Modified in place.
+            """
+
+            value_size = target_fn.function_space().ufl_element().value_size
+            if value_size > 1:
+                interpolated = np.column_stack(
+                    [_interp_to_mesh(field_array[i], grid_coords)
+                     for i in range(value_size)]
+                )
+            else:
+                interpolated = _interp_to_mesh(field_array, grid_coords)
+
+            target_fn.dat.data[:] = interpolated
 
         with h5py.File(data_file, "r") as fid:
             h, u, u_sigma, e_xx, e_xy, e_yy = [
@@ -182,25 +221,14 @@ class IceShelfProblem:
             e_xy_k = firedrake.Function(self.Q)
             e_yy_k = firedrake.Function(self.Q)
 
-            # Interpolate velocity components
-            u_k.dat.data[:] = np.column_stack(
-                (
-                    _interp_to_mesh(u[k, 0], grid_coords),
-                    _interp_to_mesh(u[k, 1], grid_coords),
-                )
-            )
-            # And errors
-            σ_k.dat.data[:] = np.column_stack(
-                (
-                    _interp_to_mesh(u_sigma[k, 0], grid_coords),
-                    _interp_to_mesh(u_sigma[k, 1], grid_coords),
-                )
-            )
+            # Interpolate velocity components and errors
+            _interp_field(u[k], grid_coords, u_k)
+            _interp_field(u_sigma[k], grid_coords, σ_k)
 
             # Interpolate strain components
-            e_xx_k.dat.data[:] = _interp_to_mesh(e_xx[k], grid_coords)
-            e_xy_k.dat.data[:] = _interp_to_mesh(e_xy[k], grid_coords)
-            e_yy_k.dat.data[:] = _interp_to_mesh(e_yy[k], grid_coords)
+            _interp_field(e_xx[k], grid_coords, e_xx_k)
+            _interp_field(e_xy[k], grid_coords, e_xy_k)
+            _interp_field(e_yy[k], grid_coords, e_yy_k)
 
             # Append to lists
             self.u.append(u_k)
