@@ -9,11 +9,12 @@ import h5py
 import sys
 import os
 
-from schurflow.utilities import *
 import jbao
 
 import schurflow.train_utilities as tu
 import schurflow.file_utilities as fu
+from schurflow.utilities import *
+
 import optax
 
 def parse():
