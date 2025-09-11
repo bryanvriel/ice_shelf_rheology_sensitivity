@@ -23,6 +23,7 @@ class PosteriorObjective:
 
         self.field = field
         self.data_objective = DataObjective(field, problem, scale=scale)
+        self.scale = scale
 
     def __call__(self, z, **kwargs):
         """Evaluate objective function"""
@@ -121,13 +122,9 @@ class DataObjective:
         # Use vjp to get gradient w.r.t. latent parameters
         grad_data = self.field.vjp(z, grad_data_controls.ravel())
 
-        # Total objective and gradient
         # NOTE: we scale for numerical purposes (primarily for the fd HVP)
         # and to have larger range on the loss values
-        obj = self.scale * (data_nll + prior_nll)
-        obj_grad = self.scale * (grad_data + grad_prior)
-
-        return (obj, obj_grad)
+        return (self.scale * data_nll, self.scale * grad_data)
 
     def loss(self, z, **kwargs):
         continue_annotation()
