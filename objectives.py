@@ -61,6 +61,13 @@ class PosteriorObjective:
         prior_nll = self.field.prior_nll(z)
         return data_nll + self.scale * prior_nll
 
+    def update_controls(self, x):
+        self.data_objective.update_controls(x)
+
+    @property
+    def controls(self):
+        return self.data_objective.controls
+
 
 class DataObjective:
     """
