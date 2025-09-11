@@ -18,14 +18,15 @@ import chex
 from typing import NamedTuple
 
 from firedrake import interpolate as fd_interpolate
-import models
+
 from iceinfer import Timer
 import rasterio
 
-from problems import make_mesh, IceShelfProblem
-from objectives import FiredrakeObjective, FiredrakeObjectiveSmoothing, DataObjective
-from fields import SingleFieldMatrix, RheologyFieldMatrix
-from utilities import NumpyConverter
+from . import models
+from .problems import make_mesh, IceShelfProblem
+from .objectives import PosteriorObjective, DataObjective
+from .fields import SingleFieldMatrix, RheologyFieldMatrix
+from .utilities import NumpyConverter
 
 # ---------------------------------------------------------------------------
 # Factories
@@ -86,7 +87,7 @@ def initialize_objects(
     if data_obj:
         objective = DataObjective(field, problem, scale=obj_scale)
     else:
-        objective = FiredrakeObjective(field, problem, scale=obj_scale)
+        objective = PosteriorObjective(field, problem, scale=obj_scale)
 
     return field, problem, objective, converter
 
