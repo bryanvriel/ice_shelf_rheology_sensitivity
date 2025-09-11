@@ -127,6 +127,14 @@ class SingleFieldMatrix(eqx.Module):
         return grad_z
 
     @eqx.filter_jit
+    def prior_nll(
+        self, z_field: jnp.ndarray
+    ) -> tuple[jnp.ndarray]:
+        """Computes the prior NLL for this field."""
+        nll = mvn_nll(z_field, self.S)
+        return nll
+
+    @eqx.filter_jit
     def prior_nll_and_grad(
         self, z_field: jnp.ndarray
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -225,6 +233,23 @@ class RheologyFieldMatrix(eqx.Module):
 
         # Combine the results (which are shaped like the inputs)
         return jnp.hstack((vjp_B, vjp_n))
+
+    @eqx.filter_jit
+    def prior_nll(self, z: jnp.ndarray) -> tuple[jnp.ndarray]:
+        """
+        Computes the value of the combined prior's NLL.
+        """
+        # Split the input vector
+        z_B = z[:self.N_B]
+        z_n = z[self.N_B:]
+
+        # Delegate to the child modules
+        p_B = self.field_B.prior_nll(z_B)
+        p_n = self.field_n.prior_nll(z_n)
+
+        # Combine the results
+        total_nll = p_B + p_n
+        return total_nll
     
     @eqx.filter_jit
     def prior_nll_and_grad(self, z: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
