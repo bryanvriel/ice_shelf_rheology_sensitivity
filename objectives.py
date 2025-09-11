@@ -11,9 +11,60 @@ from firedrake.adjoint import (
 import sys
 
 
-class FiredrakeObjective:
+class PosteriorObjective:
     """
-    Objective class where optimization is performed in latent space.
+    Objective class where optimization is performed in latent space. Creates
+    instance of DataObjective and combines with prior information in order to
+    compute the log probability of the posterior.
+    """
+
+    def __init__(self, field, problem, scale=1.0):
+        continue_annotation()
+
+        self.field = field
+        self.data_objective = DataObjective(field, problem, scale=scale)
+
+    def __call__(self, z, **kwargs):
+        """Evaluate objective function"""
+    
+        # Evaluate data log likelihood
+        data_nll, grad_data = self.data_objective(z, **kwargs)
+
+        # Evaluate prior NLL and its gradient
+        prior_nll, grad_prior = self.field.prior_nll_and_grad(z)
+
+        # Total objective and gradient (data nll is already scaled)
+        obj = data_nll + self.scale * prior_nll
+        obj_grad = grad_data + self.scale * grad_prior
+
+        return (obj, obj_grad)
+    
+    def hessian_vector_product(self, z, v, eps=1e-6):
+        """
+        Compute Hessian-vector product H @ v directly in latent parameter space
+        using finite differences.
+        """
+        # Get gradient at z + eps * v
+        _, grad_plus = self(z + eps * v)
+
+        # Get gradient at z - eps * v
+        _, grad_minus = self(z - eps * v)
+
+        # Finite difference approximation
+        hvp = (grad_plus - grad_minus) / (2 * eps)
+
+        return hvp
+
+    def loss(self, z):
+        data_nll = self.data_objective.loss(z)
+        prior_nll = self.field.prior_nll(z)
+        return data_nll + self.scale * prior_nll
+
+
+class DataObjective:
+    """
+    Objective class where optimization is performed in latent space, but
+    only returns data likelihood portion of cost function.
     """
 
     def __init__(self, field, problem, scale=1.0):
@@ -70,9 +121,6 @@ class FiredrakeObjective:
         # Use vjp to get gradient w.r.t. latent parameters
         grad_data = self.field.vjp(z, grad_data_controls.ravel())
 
-        # Evaluate prior NLL and its gradient
-        prior_nll, grad_prior = self.field.prior_nll_and_grad(z)
-
         # Total objective and gradient
         # NOTE: we scale for numerical purposes (primarily for the fd HVP)
         # and to have larger range on the loss values
@@ -81,78 +129,9 @@ class FiredrakeObjective:
 
         return (obj, obj_grad)
 
-    def forward_jvp(self, z, v):
-        """
-        Computes the Jacobian-vector product J @ v, where J = du/dz.
-        
-        Args:
-            z (np.ndarray): The point in the latent space at which
-                            to compute the JVP.
-            v (np.ndarray): The vector to multiply the Jacobian by.
-
-        Returns:
-            np.ndarray: The result of (du/dz @ v), as a NumPy array.
-        """
+    def loss(self, z, **kwargs):
         continue_annotation()
         
-        # 1. INNER JVP: Compute perturbation in control space
-        # m_pert = dm/dz @ v
-        # jvp returns (field(z), field'(z) @ v)
-        θ, θ_pert = self.field.jvp(z, v)
-        
-        # 2. OUTER JVP: Solve the Tangent Linear Model for u_pert
-        # We need the unperturbed state u at m
-        u = self.problem.forward(θ)
-        
-        # Define the unknown for the tangent linear system: state perturbation
-        u_pert = firedrake.Function(self.problem.Q)
-        
-        # Get the residual of the forward problem, R(u, m)
-        F = self.problem.residual_velocity(u, m)
-        
-        # Firedrake's 'derivative' computes the Gâteaux derivative, which is
-        # what we need for the tangent linear model.
-        # (∂R/∂u) @ u_pert + (∂R/∂m) @ m_pert = 0
-        F_tlm = (
-            firedrake.derivative(F, u, u_pert) +
-            firedrake.derivative(F, m, m_pert)
-        )
-        
-        # The term with u_pert is the LHS, the term with m_pert is the RHS.
-        # Firedrake separates these automatically when creating the problem.
-        # We are solving for u_pert.
-        solve_problem = firedrake.LinearVariationalProblem(
-            firedrake.lhs(F_tlm), 
-            -firedrake.rhs(F_tlm), # Move the m_pert term to the RHS
-            u_pert
-        )
-        solver = firedrake.LinearVariationalSolver(solve_problem)
-        solver.solve()
-        
-        pause_annotation()
-        
-        # Return the result as a NumPy array
-        return u_pert.vector().get_local()
-
-    def hessian_vector_product(self, z, v, eps=1e-6):
-        """
-        Compute Hessian-vector product H @ v directly in latent parameter space
-        using finite differences.
-        """
-        # Get gradient at z + eps * v
-        _, grad_plus = self(z + eps * v)
-
-        # Get gradient at z - eps * v
-        _, grad_minus = self(z - eps * v)
-
-        # Finite difference approximation
-        hvp = (grad_plus - grad_minus) / (2 * eps)
-
-        return hvp
-
-    def loss(self, z):
-        continue_annotation()
-
         # Reconstruct field controls
         x = self.field(z)
         self.update_controls(x)
@@ -160,13 +139,9 @@ class FiredrakeObjective:
         # Evaluate data NLL
         data_nll = float(self.reduced_nll(self._controls))
 
-        # Evaluate prior NLL and its gradient
-        prior_nll, grad_prior = self.field.prior_nll_and_grad(z)
-
         pause_annotation()
-
-        return self.scale * (data_nll + prior_nll)
-
+        return data_nll
+    
     def update_controls(self, x):
         """
         Assign numpy array values to controls.
@@ -201,8 +176,7 @@ class FiredrakeObjective:
         raise ValueError("Cannot set controls.")
 
 
-
-class FiredrakeObjectiveMesh:
+class PosteriorObjectiveMesh:
     """
     Objective class where optimization is performed in mesh-space (at the nodes).
     """
