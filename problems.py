@@ -176,7 +176,24 @@ class IceShelfProblem:
                 the interpolated values. Modified in place.
             """
 
-            value_size = target_fn.function_space().ufl_element().value_size
+            # Determine the number of components in ``target_fn``.  Depending on
+            # the version of Firedrake/UFL, the underlying element may expose
+            # either a ``value_size`` method or only a ``value_shape`` tuple.  In
+            # some environments accessing ``value_size`` as an attribute raises
+            # an ``AttributeError`` (see bug report), so we fall back to
+            # computing the size from ``value_shape`` when necessary.
+            element = target_fn.function_space().ufl_element()
+            try:
+                # Newer versions expose ``value_size`` as a method
+                value_size = element.value_size()
+            except AttributeError:  # pragma: no cover - depends on Firedrake version
+                shape_attr = getattr(element, "value_shape", ())
+                if callable(shape_attr):
+                    shape = shape_attr()
+                else:
+                    shape = shape_attr
+                value_size = int(np.prod(shape)) if len(shape) > 0 else 1
+
             if value_size > 1:
                 interpolated = np.column_stack(
                     [_interp_to_mesh(field_array[i], grid_coords)
