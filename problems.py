@@ -81,8 +81,6 @@ class IceShelfProblem:
 
         # 100 scale works well
         self.nll_scale = firedrake.Constant(nll_scale / area)
-        #self.nll_scale = firedrake.Constant(100 / area)
-        #self.nll_scale = firedrake.Constant(1000 / area)
 
         # Mesh metadata for assembling
         quad_degree = 3 * (degree - 1) + 2 * degree
@@ -175,32 +173,15 @@ class IceShelfProblem:
                 Firedrake function whose ``.dat.data`` will be populated with
                 the interpolated values. Modified in place.
             """
-
-            # Determine the number of components in ``target_fn``.  Depending on
-            # the version of Firedrake/UFL, the underlying element may expose
-            # either a ``value_size`` method or only a ``value_shape`` tuple.  In
-            # some environments accessing ``value_size`` as an attribute raises
-            # an ``AttributeError`` (see bug report), so we fall back to
-            # computing the size from ``value_shape`` when necessary.
-            element = target_fn.function_space().ufl_element()
-            try:
-                # Newer versions expose ``value_size`` as a method
-                value_size = element.value_size()
-            except AttributeError:  # pragma: no cover - depends on Firedrake version
-                shape_attr = getattr(element, "value_shape", ())
-                if callable(shape_attr):
-                    shape = shape_attr()
-                else:
-                    shape = shape_attr
-                value_size = int(np.prod(shape)) if len(shape) > 0 else 1
-
-            if value_size > 1:
+            if field_array.ndim == 3:
                 interpolated = np.column_stack(
                     [_interp_to_mesh(field_array[i], grid_coords)
-                     for i in range(value_size)]
+                     for i in range(field_array.shape[0])]
                 )
-            else:
+            elif field_array.ndim == 2:
                 interpolated = _interp_to_mesh(field_array, grid_coords)
+            else:
+                raise ValueError('Field array has unsupported shape.')
 
             target_fn.dat.data[:] = interpolated
 
