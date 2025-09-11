@@ -10,11 +10,13 @@ from firedrake import inner
 import icepack
 from icepack.calculus import grad
 import rasterio
-import models
-from utilities import coordinate_values
+
 
 import cryogen
 from cryogen import interpolate
+
+from . import models
+from .utilities import coordinate_values
 
 def inv_norm_tanh(θ, low=0.1, high=5.0):
     A = firedrake.Constant(0.5 * (high - low))
