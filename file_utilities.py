@@ -28,8 +28,14 @@ def generate_filename(cfg, loc, amp):
     loc_dict = {"terminus": "t", "GL": "gl"}
     loc_amp = f"l{loc_dict[loc]}_a{amp[0]}"
 
-    # Step 4: Combine all into filename
-    filename = f"r_{loc_amp}_{pre}_{joint}_p{penalties_str}_s{scale_str}.h5"
+    # Step 4: type of function
+    if cfg.matrix.spectral:
+        ftype = "spec"
+    else:
+        ftype = "wav"
+
+    # Final: Combine all into filename
+    filename = f"r_{ftype}_{loc_amp}_{pre}_{joint}_p{penalties_str}_s{scale_str}.h5"
     return os.path.join(cfg.output_dir, filename)
 
 
