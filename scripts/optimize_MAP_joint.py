@@ -59,7 +59,7 @@ def parse():
         action="store_true",
         help="Force optimizer to be SGD.",
     )
-    
+
     return parser.parse_known_args()
 
 
@@ -69,7 +69,9 @@ def main(cfg, args):
     data_file = fu.data_filename(cfg, args)
 
     # Create objects
-    field, problem, objective, converter = tu.initialize_objects(cfg, data_file)
+    field, problem, objective, converter = tu.initialize_objects(
+        cfg, data_file,
+    )
 
     # Output filename
     outfile = fu.generate_filename(cfg, args.loc, args.amp)

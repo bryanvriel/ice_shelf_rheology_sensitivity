@@ -46,7 +46,10 @@ def initialize_objects(
     outdir = cfg.output_dir
 
     # Create rheology field
-    matfile = os.path.join(outdir, "matrix_data.h5")
+    if cfg.matrix.spectral:
+        matfile = os.path.join(outdir, "matrix_data_spectral.h5")
+    else:
+        matfile = os.path.join(outdir, "matrix_data.h5")
     precondition = cfg.inverse.precondition
     if cfg.inverse.joint:
         field = RheologyFieldMatrix(
