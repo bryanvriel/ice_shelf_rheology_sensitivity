@@ -1,5 +1,6 @@
 #-*- coding: utf-8 -*-
 
+import copy
 import numpy as np
 import firedrake
 from firedrake.adjoint import (
@@ -85,9 +86,9 @@ class DataObjective:
 
         # Initialize the objective components
         if isinstance(controls, (firedrake.Function, firedrake.Constant)):
-            self._controls = controls.copy(deepcopy=True)
+            self._controls = copy.deepcopy(controls)
         else:
-            self._controls = [field.copy(deepcopy=True) for field in controls]
+            self._controls = [copy.deepcopy(field) for field in controls]
         self.state = problem.forward(self._controls)
 
         # Form data objective
