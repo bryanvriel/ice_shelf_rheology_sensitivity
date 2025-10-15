@@ -16,12 +16,8 @@ import cryogen
 from cryogen import interpolate
 
 from . import models
-from .utilities import coordinate_values
+from .utilities import coordinate_values, const_to_R_fn
 
-def inv_norm_tanh(θ, low=0.1, high=5.0):
-    A = firedrake.Constant(0.5 * (high - low))
-    C0 = firedrake.Constant(0.5 * (high + low))
-    return A * firedrake.tanh(θ) + C0
 
 def make_mesh(meshfile=None, comm=None, mesh_span=None, mesh_spacing=None):
     if comm is not None:
@@ -51,16 +47,19 @@ class IceShelfProblem:
         side_wall_ids=[],
         degree=2,
         side_friction=0.0,
-        nll_scale=1000.0,
+        nll_scale=1.0,
         default_vel_error=10.0,
         solver_type="petsc",
+        norm="log",
         fixed_exponent=False,
     ):
 
         # Initialize functional spaces
         self.mesh = mesh
         self.Q = firedrake.FunctionSpace(self.mesh, family="CG", degree=degree)
+        self.R = firedrake.FunctionSpace(self.mesh, family="R", degree=0)
         self.coords = coordinate_values(self.Q)
+        print(self.coords.shape)
         self.N_pts = self.coords.shape[0]
         if self.coords.ndim == 2:
             self.V = firedrake.VectorFunctionSpace(
@@ -77,9 +76,8 @@ class IceShelfProblem:
         # the scale of the likelihood because we assume independent observations
         # By using this "density" based scaling, the data likelihood becomes
         # invariant to the size of the modeling domain (e.g., Brinkerhoff, 2021)
-        area = firedrake.assemble(1 * firedrake.dx(self.mesh))
-
-        # 100 scale works well
+        area = firedrake.assemble(firedrake.Constant(1.0) * firedrake.dx(self.mesh))
+        self.area = area
         self.nll_scale = firedrake.Constant(nll_scale / area)
 
         # Mesh metadata for assembling
@@ -89,7 +87,16 @@ class IceShelfProblem:
         self._side_wall_ids = side_wall_ids
 
         # Initialize flow model
-        self.model = models.CustomIceShelf(viscosity=models.normalized_rheology)
+        if norm == "log":
+            self.model = models.CustomIceShelf(viscosity=models.normalized_rheology_log)
+            self.unnormalize_rheology = models.unnormalize_rheology_log
+            self.norm_type = "log"
+        elif norm == "tanh":
+            self.model = models.CustomIceShelf(viscosity=models.normalized_rheology)
+            self.unnormalize_rheology = models.unnormalize_rheology
+            self.norm_type = "tanh"
+        else:
+            raise ValueError
 
         # Initialize flow solvers
         self.solver, self.solver_opts = models.create_solver(
@@ -98,12 +105,15 @@ class IceShelfProblem:
             dirichlet_ids=dirichlet_ids,
             side_wall_ids=side_wall_ids,
         )
-        # Static flow solver arguments
+
+        # Static flow solver arguments (these flow through pyadoint)
+        # These have to be R-space functions rather than Constants in order
+        # to avoid 'Constant requires a domain to work with pyadjoint' errors
         self.solver_kwargs = {
-            "B_min": firedrake.Constant(cfg.model.B_min, domain=self.mesh),
-            "B_max": firedrake.Constant(cfg.model.B_max, domain=self.mesh),
-            "n_min": firedrake.Constant(cfg.model.n_min, domain=self.mesh),
-            "n_max": firedrake.Constant(cfg.model.n_max, domain=self.mesh),
+            "B_min": const_to_R_fn(cfg.model.B_min, self.R),
+            "B_max": const_to_R_fn(cfg.model.B_max, self.R),
+            "n_min": const_to_R_fn(cfg.model.n_min, self.R),
+            "n_max": const_to_R_fn(cfg.model.n_max, self.R),
         }
 
         # Initialize constants
@@ -119,6 +129,7 @@ class IceShelfProblem:
         self.e_xy = []
         self.e_yy = []
         self.σ_eps = firedrake.Constant(0.001)
+        self.σ_u_default = default_vel_error
 
         # Placeholders for rheology fields (only used when fixed_exponent = True)
         # Also used for self.reset_solver()
@@ -129,25 +140,34 @@ class IceShelfProblem:
         # Not used here, but as an interface to FiredrakeObjective
         self.fixed_exponent = fixed_exponent
         if fixed_exponent:
-            self.controls = firedrake.Function(self.Q)
             self.forward = self._forward_rigidity
             self.regularization = self._regularization_rigidity
         else:
-            self.controls = (firedrake.Function(self.Q), firedrake.Function(self.Q))
             self.forward = self._forward
             self.regularization = self._regularization
 
         self._obs_init = False
 
-    def load_observations(self, data_file, Nt: Optional[int] = None):
+    @property
+    def controls(self):
+        if self.fixed_exponent:
+            return self.θ_B
+        else:
+            return [self.θ_B, self.θ_n]
+
+    @controls.setter
+    def controls(self, value):
+        raise ValueError("Cannot set controls.")
+
+    def load_observations(self, data_file, time_ind: Optional[list] = None):
         """Load observation fields defined on a structured grid.
 
         Parameters
         ----------
         data_file:
             Path to an HDF5 file containing the observation fields.
-        Nt:
-            Number of time epochs to load. If ``None``, all epochs are used.
+        time_ind:
+            List of time indices to load. If ``None``, all epochs are used.
         """
 
         mesh_coords = (self.coords[:, 0], self.coords[:, 1])
@@ -186,22 +206,23 @@ class IceShelfProblem:
             target_fn.dat.data[:] = interpolated
 
         with h5py.File(data_file, "r") as fid:
-            h, u, u_sigma, e_xx, e_xy, e_yy = [
+            h, u, e_xx, e_xy, e_yy = [
                 fid[key][()] for key in
-                ("h", "u", "u_sigma", "e_xx", "e_xy", "e_yy")
+                ("h", "u", "e_xx", "e_xy", "e_yy")
             ]
             grid_coords = (fid["x"][()], fid["y"][()])
-            
-            if Nt is None:
+        
+            if time_ind is None:
                 self.Nt = u.shape[0]
+                time_ind = range(self.Nt)
             else:
-                self.Nt = Nt
+                self.Nt = len(time_ind)
 
         # Thickness is time-averaged
         self.h.dat.data[:] = _interp_to_mesh(h, grid_coords)
 
         # Interpolate the time epoch data
-        for k in range(self.Nt):
+        for k in time_ind:
 
             # Local function spaces
             u_k = firedrake.Function(self.V)
@@ -212,7 +233,8 @@ class IceShelfProblem:
 
             # Interpolate velocity components and errors
             _interp_field(u[k], grid_coords, u_k)
-            _interp_field(u_sigma[k], grid_coords, σ_k)
+            #_interp_field(u_sigma[k], grid_coords, σ_k)
+            σ_k.dat.data[:] = self.σ_u_default
 
             # Interpolate strain components
             _interp_field(e_xx[k], grid_coords, e_xx_k)
@@ -237,8 +259,10 @@ class IceShelfProblem:
             self.solver_kwargs["n_max"].dat.data_ro,
         )
         n_np = n_fn.dat.data_ro.copy()
-        n_np[:] = 3.0
-        theta_n_vals = cryogen.tanh_forward(n_np, tanh_params)
+        if self.norm_type == "tanh":
+            theta_n_vals = cryogen.tanh_forward(n_np, tanh_params)
+        elif self.norm_type == "log":
+            theta_n_vals = np.log(n_np)
         self.θ_n.dat.data[:] = theta_n_vals
 
     def residual(self, u, params):
