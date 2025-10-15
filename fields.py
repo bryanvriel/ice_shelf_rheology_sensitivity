@@ -66,8 +66,10 @@ class SingleFieldMatrix(eqx.Module):
     M: int = eqx.field(static=True)     # Number of points in the field
     N: int = eqx.field(static=True)     # Number of parameters for this field
 
+    matrix_data: dict
+
     def __init__(
-        self, matfile: str, field_name: str, penalties: list, precondition: bool
+        self, matfile: str | dict, field_name: str, penalties: list, precondition: bool
     ):
         """
         Initializes the matrix and associated data for a single field.
@@ -78,13 +80,17 @@ class SingleFieldMatrix(eqx.Module):
             penalties (list): List of penalty parameters for regularization.
             precondition (bool): Whether to apply preconditioning.
         """
-        # Load data from HDF5 into NumPy arrays
-        matrix_data = {}
-        with h5py.File(matfile, "r") as fid:
-            group = fid[field_name]
-            for key in ("G", "Gx", "Gy"):
-                matrix_data[key] = group[key][()]
+        # Load data from HDF5 into NumPy arrays or copy dict
+        if isinstance(matfile, dict):
+            matrix_data = matfile[field_name]
+        else:
+            matrix_data = {}
+            with h5py.File(matfile, "r") as fid:
+                group = fid[field_name]
+                for key in ("G", "Gx", "Gy"):
+                    matrix_data[key] = group[key][()]
 
+        self.matrix_data = matrix_data
         G_np = matrix_data["G"]
         self.M, self.N = G_np.shape
 
@@ -145,6 +151,9 @@ class SingleFieldMatrix(eqx.Module):
     def prior_precision(self):
         return self.S
 
+    def update_G(self, G):
+        self.G[:] = G[:]
+
 
 class RheologyFieldMatrix(eqx.Module):
     """
@@ -168,12 +177,20 @@ class RheologyFieldMatrix(eqx.Module):
     N_n: int = eqx.field(static=True)
     M: int = eqx.field(static=True)
     N: int = eqx.field(static=True)
+
+    matrix_data: dict
     
-    def __init__(self, matfile: str, penalties: list, precondition: bool = False):
+    def __init__(self, matfile: str | dict, penalties: list, precondition: bool = False):
 
         # Create the specialized modules for each field
         self.field_B = SingleFieldMatrix(matfile, "B", penalties[0], precondition)
         self.field_n = SingleFieldMatrix(matfile, "n", penalties[1], precondition)
+
+        # Combined matrix_data
+        self.matrix_data = {
+            "B": self.field_B.matrix_data,
+            "n": self.field_n.matrix_data,
+        }
 
         # Store combined shapes for convenience
         self.N_B = self.field_B.N
