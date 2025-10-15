@@ -58,8 +58,8 @@ def terminus_perturbation(**kwargs):
 
 
 def inv_norm_tanh(θ, low=0.1, high=5.0):
-    A = firedrake.Constant(0.5 * (high - low))
-    C0 = firedrake.Constant(0.5 * (high + low))
+    A = 0.5 * (high - low)
+    C0 = 0.5 * (high + low)
     return A * firedrake.tanh(θ) + C0
 
 
@@ -71,8 +71,21 @@ def unnormalize_rheology(**kwargs):
     return B, n
 
 
+def unnormalize_rheology_log(**kwargs):
+    θ_B = kwargs["norm_rigidity"]
+    θ_n = kwargs["norm_exponent"]
+    B = firedrake.exp(θ_B)
+    n = firedrake.exp(θ_n)
+    return B, n
+
+
 def normalized_rheology(**kwargs):
     B, n = unnormalize_rheology(**kwargs)
+    return rigidity_with_exponent(rigidity=B, exponent=n, **kwargs)
+
+
+def normalized_rheology_log(**kwargs):
+    B, n = unnormalize_rheology_log(**kwargs)
     return rigidity_with_exponent(rigidity=B, exponent=n, **kwargs)
 
 
