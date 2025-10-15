@@ -2,11 +2,49 @@
 
 import numpy as np
 import jax.numpy as jnp
+import argparse
 import datetime
 import h5py
 import sys
 import jax
 import os
+
+
+def common_parse() -> argparse.ArgumentParser:
+    """
+    Command line arguments that are common to many of the scripts.
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("cfg", type=str, help="Input configuration file.")
+    parser.add_argument(
+        "--amp",
+        action="store",
+        type=str,
+        default="mid",
+        help="Amplitude from (low, mid, high). Default: mid.",
+    )
+    parser.add_argument(
+        "--loc",
+        action="store",
+        type=str,
+        default="terminus",
+        help="Perturbation location from (terminus, GL). Default: terminus.",
+    )
+    parser.add_argument(
+        "-r",
+        action="store_true",
+        dest="restore",
+        help="Restore from previous solution.",
+    )
+    parser.add_argument(
+        "-rs",
+        action="store",
+        type=int,
+        default=None,
+        dest="restore_stage",
+        help="Integer stage to restore from. Default: None.",
+    )
+    return parser
 
 
 def generate_filename(cfg, loc, amp):
@@ -43,10 +81,9 @@ def data_filename(cfg, args):
     outdir = cfg.output_dir
     loc = f"{args.loc}"
     amp = f"amp-{args.amp}"
-    sig = f"sigma{cfg.data.u_sigma:.1f}"
     return os.path.join(
         outdir,
-        f"data_inverse_perturbed_{loc}_{amp}_{sig}.h5",
+        f"data_inverse_perturbed_{loc}_{amp}.h5",
     )
 
 
