@@ -7,6 +7,7 @@ from scipy.sparse.linalg import LinearOperator
 from tqdm import tqdm
 import datetime
 import warnings
+import shutil
 import h5py
 import sys
 import os
@@ -39,7 +40,7 @@ def initialize_objects(
     obj_scale=None,
     comm=None,
     data_obj=False,
-    Nt=None,
+    time_ind=None,
     mesh_degree=2,
 ):
 
@@ -47,7 +48,7 @@ def initialize_objects(
 
     # Create rheology field
     if cfg.matrix.spectral:
-        matfile = os.path.join(outdir, "matrix_data_spectral.h5")
+        matfile = threshold_spectral_matrix(outdir, cfg.matrix.spectral_L_min)
     else:
         matfile = os.path.join(outdir, "matrix_data.h5")
     precondition = cfg.inverse.precondition
@@ -77,12 +78,25 @@ def initialize_objects(
     # Now, create a problem with a more reasonable area scale
     if cfg.inverse.joint:
         problem = IceShelfProblem(
-            cfg, mesh, nll_scale=cfg.inverse.nll_scale, degree=mesh_degree
+            cfg,
+            mesh,
+            nll_scale=cfg.inverse.nll_scale,
+            degree=mesh_degree,
+            norm=cfg.inverse.norm_type,
+            default_vel_error=cfg.data.u_sigma,
         )
-        problem.load_observations(data_file, Nt=Nt)
+        problem.load_observations(data_file, time_ind=time_ind)
     else:
-        problem = IceShelfProblem(cfg, mesh, fixed_exponent=True, degree=mesh_degree)
-        problem.load_observations(data_file, Nt=1)
+        problem = IceShelfProblem(
+            cfg,
+            mesh,
+            nll_scale=cfg.inverse.nll_scale,
+            fixed_exponent=True,
+            degree=mesh_degree,
+            norm=cfg.inverse.norm_type,
+            default_vel_error=cfg.data.u_sigma,
+        )
+        problem.load_observations(data_file, time_ind=time_ind)
         problem.load_rheology(outdir)
 
     # Create the optimization objective object
@@ -91,14 +105,79 @@ def initialize_objects(
         objective = DataObjective(field, problem, scale=obj_scale)
     else:
         objective = PosteriorObjective(field, problem, scale=obj_scale)
+    #objective = None
 
     return field, problem, objective, converter
+
+
+def threshold_spectral_matrix(outdir, L_min, target_std=0.5):
+
+    import matplotlib.pyplot as plt
+
+    # Read reference matrix data
+    matrix_data = {}
+    with h5py.File("aux/matrix_data_spectral.h5", "r") as fid:
+        x = fid["xp"][()]
+        y = fid["yp"][()]
+        evals = fid["evals"][()]
+        for name in ("B", "n"):
+            sub_data = {}
+            group = fid[name]
+            matrix_data[name] = {"G": group["G"][()], "G_grid": group["G_grid"][()]}
+
+    # Read sensitivity
+    path = os.path.join(outdir, "mesh_data_sensitivity.h5")
+    with h5py.File(path, "r") as fid:
+        S = fid["s_mesh"][()]
+
+    # Compute threshold
+    Θ = 1.0
+    L_min = 1e3 * L_min
+    σ_c = Θ / L_min
+    eval_thresh = (2 * np.pi / L_min) ** 2
+    
+    # Sensitivity-based thresholds
+    #SG = np.abs(S @ matrix_data["B"]["G"]) / np.sqrt(evals)
+    #sens_mask = SG >= 1e8
+
+    # Mask the matrices and scale the columns
+    mask = (evals <= eval_thresh) #* sens_mask
+    evals = evals[mask]
+    Sr = np.sum(1 / evals)
+    for name in ("B", "n"):
+
+        # Mask first
+        G = matrix_data[name]["G"]
+        G_grid = matrix_data[name]["G_grid"]
+        G = G[:, mask]
+        G_grid = G_grid[:, mask]
+
+        # Eigenvalue and length scale scaling
+        α = target_std / (σ_c * np.sqrt(Sr))
+        print('α:', α)
+        Np = G.shape[1]
+        for j in range(Np):
+            scale = α * σ_c / np.sqrt(evals[j])
+            G[:, j] *= scale
+            G_grid[:, j] *= scale
+
+        # Update dictionary
+        matrix_data[name]["G"] = G
+        matrix_data[name]["Gx"] = np.zeros_like(G)
+        matrix_data[name]["Gy"] = np.zeros_like(G)
+        matrix_data[name]["G_grid"] = G_grid
+        matrix_data[name]["S"] = np.eye(Np) * α**2
+
+        #sc = plt.scatter(x, y, s=10, c=G[:, 0], cmap="turbo")
+        #plt.colorbar(sc)
+        #plt.show()
+
+    return matrix_data
 
 
 # ---------------------------------------------------------------------------
 # Inversion tools
 # ---------------------------------------------------------------------------
-
 
 class InfoState(NamedTuple):
     iter_num: chex.Numeric
@@ -139,7 +218,7 @@ def optimize_bfgs(
             "disp": True,
             "maxiter": maxiter,
             "hess_inv0": hess_inv0,
-            "gtol": 1e-4,
+            "gtol": 1e-6,
             "c2": 0.99,
         }
     elif method == "L-BFGS-B":
@@ -150,6 +229,7 @@ def optimize_bfgs(
             "maxls": maxls,
             "maxcor": maxcor,
             "ftol": factr * np.finfo(np.float64).eps,
+            "gtol": 1e-6,
         }
 
     # Run optimization
@@ -162,8 +242,10 @@ def optimize_bfgs(
             options=options,
         )
         print(result.message)
+        print('Final function value:', result.fun)
+        print('Number of iterations:', result.nit)
 
-    return result
+    return result.x, {}, [result.fun,]
 
 
 def optimize_sgd(
@@ -248,11 +330,14 @@ def init_optimizer(opt_type, params, learning_rate):
         # hard-code the learning rate for now
         # sgd always requires some type of gradient clipping to avoid NaNs
         optimizer = optax.chain(
-            optax.clip_by_global_norm(0.1),
-            opt_cls(learning_rate=0.00005, momentum=0.5),
+            optax.clip_by_global_norm(5.0),
+            opt_cls(learning_rate=0.0005, momentum=0.9),
         )
     else:
-        optimizer = opt_cls(learning_rate=learning_rate)
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(5.0),
+            opt_cls(learning_rate=learning_rate),
+        )
 
     opt_state = optimizer.init(params)
 
@@ -392,7 +477,7 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
 
     # Evaluate rheology fields
     out_preds = {"z": z, "x": x_out, "y": y_out}
-    B, n = models.unnormalize_rheology(
+    B, n = problem.unnormalize_rheology(
         norm_rigidity=θ_B,
         norm_exponent=θ_n,
         **problem.solver_kwargs,
