@@ -87,7 +87,7 @@ class SingleFieldMatrix(eqx.Module):
             matrix_data = {}
             with h5py.File(matfile, "r") as fid:
                 group = fid[field_name]
-                for key in ("G", "Gx", "Gy"):
+                for key in ("G", "Gx", "Gy", "G_grid"):
                     matrix_data[key] = group[key][()]
 
         self.matrix_data = matrix_data
