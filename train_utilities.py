@@ -19,6 +19,7 @@ import chex
 from typing import NamedTuple
 
 from firedrake import interpolate as fd_interpolate
+from firedrake import assemble
 
 from iceinfer import Timer
 import rasterio
@@ -98,6 +99,7 @@ def initialize_objects(
         )
         problem.load_observations(data_file, time_ind=time_ind)
         problem.load_rheology(outdir)
+    problem.init_solvers()
 
     # Create the optimization objective object
     obj_scale = obj_scale or cfg.inverse.objective_scale
@@ -335,7 +337,6 @@ def init_optimizer(opt_type, params, learning_rate):
         )
     else:
         optimizer = optax.chain(
-            optax.clip_by_global_norm(5.0),
             opt_cls(learning_rate=learning_rate),
         )
 
@@ -482,10 +483,9 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
         norm_exponent=θ_n,
         **problem.solver_kwargs,
     )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        out_preds["B"] = converter(fd_interpolate(B, problem.Q))
-        out_preds["n"] = converter(fd_interpolate(n, problem.Q))
+
+    out_preds["B"] = converter(assemble(fd_interpolate(B, problem.Q)))
+    out_preds["n"] = converter(assemble(fd_interpolate(n, problem.Q)))
 
     for i, p in enumerate(preds):
         out_preds[f"u{i}"] = converter(p)
