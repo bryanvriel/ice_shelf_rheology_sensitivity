@@ -63,11 +63,53 @@ def inv_norm_tanh(θ, low=0.1, high=5.0):
     return A * firedrake.tanh(θ) + C0
 
 
+def _arctanh(x):
+    eps = firedrake.Constant(1e-8)
+    x_clip = firedrake.min_value(firedrake.max_value(x, -1.0 + eps), 1.0 - eps)
+    return 0.5 * firedrake.ln((1.0 + x_clip) / (1.0 - x_clip))
+
+
+def fwd_norm_tanh(θ, low=0.1, high=5.0):
+    A = 0.5 * (high - low)
+    C0 = 0.5 * (high + low)
+    return _arctanh((θ - C0) / A)
+
+
+def inv_norm_arctan(θ, low=0.1, high=5.0, tau=1.0):
+    m = 0.5 * (low + high)
+    r = 0.5 * (high - low)
+    s = 2 / np.pi * r
+    return m + s * firedrake.atan(θ / tau)
+
+
+def fwd_norm_arctan(θ, low=0.1, high=5.0, tau=1.0):
+    L = low
+    U = high
+    m = 0.5 * (L + U)
+    r = 0.5 * (U - L)
+    eps = firedrake.Constant(1e-6)
+
+    z = (θ - m) / r
+    zc = firedrake.min_value(firedrake.max_value(z, -1 + eps), 1 - eps)
+
+    x = 0.5 * np.pi * zc
+    return tau * firedrake.tan(x)
+
+
 def unnormalize_rheology(**kwargs):
     θ_B = kwargs["norm_rigidity"]
     θ_n = kwargs["norm_exponent"]
     B = inv_norm_tanh(θ_B, low=kwargs["B_min"], high=kwargs["B_max"])
     n = inv_norm_tanh(θ_n, low=kwargs["n_min"], high=kwargs["n_max"])
+    return B, n
+
+
+def unnormalize_rheology_arctan(**kwargs):
+    θ_B = kwargs["norm_rigidity"]
+    θ_n = kwargs["norm_exponent"]
+    #B = inv_norm_arctan(θ_B, low=kwargs["B_min"], high=kwargs["B_max"])
+    B = firedrake.exp(θ_B)
+    n = inv_norm_arctan(θ_n, low=kwargs["n_min"], high=kwargs["n_max"])
     return B, n
 
 
@@ -81,6 +123,11 @@ def unnormalize_rheology_log(**kwargs):
 
 def normalized_rheology(**kwargs):
     B, n = unnormalize_rheology(**kwargs)
+    return rigidity_with_exponent(rigidity=B, exponent=n, **kwargs)
+
+
+def normalized_rheology_arctan(**kwargs):
+    B, n = unnormalize_rheology_arctan(**kwargs)
     return rigidity_with_exponent(rigidity=B, exponent=n, **kwargs)
 
 
@@ -152,7 +199,7 @@ def _petsc_opts(dirichlet_ids, side_wall_ids, **_):
         "side_wall_ids": side_wall_ids,
         "diagnostic_solver_type": "petsc",
         "diagnostic_solver_parameters": {
-            "snes_linesearch_type": "bt",
+            "snes_linesearch_type": "cp",
             "snes_max_it": 200,
         },
     }
