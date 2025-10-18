@@ -59,7 +59,6 @@ class IceShelfProblem:
         self.Q = firedrake.FunctionSpace(self.mesh, family="CG", degree=degree)
         self.R = firedrake.FunctionSpace(self.mesh, family="R", degree=0)
         self.coords = coordinate_values(self.Q)
-        print(self.coords.shape)
         self.N_pts = self.coords.shape[0]
         if self.coords.ndim == 2:
             self.V = firedrake.VectorFunctionSpace(
@@ -95,16 +94,12 @@ class IceShelfProblem:
             self.model = models.CustomIceShelf(viscosity=models.normalized_rheology)
             self.unnormalize_rheology = models.unnormalize_rheology
             self.norm_type = "tanh"
+        elif norm == "arctan":
+            self.model = models.CustomIceShelf(viscosity=models.normalized_rheology_arctan)
+            self.unnormalize_rheology = models.unnormalize_rheology_arctan
+            self.norm_type = "arctan"
         else:
             raise ValueError
-
-        # Initialize flow solvers
-        self.solver, self.solver_opts = models.create_solver(
-            self.model,
-            solver_type,
-            dirichlet_ids=dirichlet_ids,
-            side_wall_ids=side_wall_ids,
-        )
 
         # Static flow solver arguments (these flow through pyadoint)
         # These have to be R-space functions rather than Constants in order
@@ -119,6 +114,9 @@ class IceShelfProblem:
         # Initialize constants
         self.Cs = firedrake.Constant(side_friction)
         self.d_pert = firedrake.Constant(0.0)
+        self.dirichlet_ids = dirichlet_ids
+        self.side_wall_ids = side_wall_ids
+        self.solver_type = solver_type
 
         # Initialize function spaces for observations (potentially time-dependent)
         # These need to be loaded prior to any forward solves
@@ -147,6 +145,7 @@ class IceShelfProblem:
             self.regularization = self._regularization
 
         self._obs_init = False
+        self._solver_init = False
 
     @property
     def controls(self):
@@ -252,70 +251,40 @@ class IceShelfProblem:
 
     def load_rheology(self, dirname):
         print('Loading true rheology')
-        r_n = rasterio.open(os.path.join(dirname, "n_exp.tif"))
-        n_fn = icepack.interpolate(r_n, self.Q)
-        tanh_params = cryogen.compute_tanh_norm_params(
-            self.solver_kwargs["n_min"].dat.data_ro,
-            self.solver_kwargs["n_max"].dat.data_ro,
-        )
-        n_np = n_fn.dat.data_ro.copy()
+        with rasterio.open(os.path.join(dirname, "n_exp.tif")) as r_n:
+            n_fn = icepack.interpolate(r_n, self.Q)
+
         if self.norm_type == "tanh":
-            theta_n_vals = cryogen.tanh_forward(n_np, tanh_params)
-        elif self.norm_type == "log":
-            theta_n_vals = np.log(n_np)
-        self.θ_n.dat.data[:] = theta_n_vals
+            θ_n = models.fwd_norm_tanh(
+                n_fn, low=self.solver_kwargs["n_min"], high=self.solver_kwargs["n_max"],
+            )
+        elif self.norm_type == "arctan":
+            θ_n = models.fwd_norm_arctan(
+                n_fn, low=self.solver_kwargs["n_min"], high=self.solver_kwargs["n_max"],
+            )
+        else:
+            θ_n = firedrake.ln(n_fn)
 
-    def residual(self, u, params):
-        """
-        Reconstructs and returns the PDE residual F(u, m) = 0 for each epoch.
+        self.θ_n = firedrake.assemble(firedrake.interpolate(θ_n, self.Q))
 
-        Args:
-            u (firedrake.Function): The state variable (velocity).
-            params (list): The control variable(s).
-        """
-        # Unpack parameters
-        θ_B, θ_n = params
-
-        kwargs = dict(
-            thickness=self.h,
-            norm_rigidity=θ_B,
-            norm_exponent=θ_n,
-            **self.solver_kwargs,
-        )
-
-        # Retrieve the mesh from velocity from first epoch
-        mesh = u[0].function_space().mesh()
-
-        # --- Replicate the logic from PETScSolver.setup ---
-
-        # Determine boundary IDs
-        boundary_ids = mesh.exterior_facets.unique_markers
-        ice_front_ids_comp = set(self._dirichlet_ids + self._side_wall_ids)
-        ice_front_ids = list(set(boundary_ids) - ice_front_ids_comp)
-
-        id_kwargs = {
-            "side_wall_ids": self._side_wall_ids,
-            "ice_front_ids": ice_front_ids,
-        }
-       
-        res = [] 
-        for k in range(self.Nt):
-        
-            # Create the 'action' functional
-            action = self.model.action(velocity=u[k], **kwargs, **id_kwargs)
-
-            # Compute the derivative to get the residual
-            F = firedrake.derivative(action, u[k])
-            res.append(F)
-        
-        return res
+    def init_solvers(self):
+        self.solvers = []
+        for _ in range(self.Nt):
+            solver, _ = models.create_solver(
+                self.model,
+                self.solver_type,
+                dirichlet_ids=self.dirichlet_ids,
+                side_wall_ids=self.side_wall_ids,
+            )
+            self.solvers.append(solver)
+        self._solver_init = True
 
     def _forward(self, params):
         θ_B, θ_n = params
         u_pred = []
         for k in range(self.Nt):
             u_pred.append(
-                self.solver.diagnostic_solve(
+                self.solvers[k].diagnostic_solve(
                     velocity=self.u[k],
                     thickness=self.h,
                     norm_rigidity=θ_B,
@@ -414,31 +383,15 @@ class IceShelfProblem:
             * firedrake.dx
         )
 
-    def _regularization(self, params):
-        θ_B, θ_n = params
-
-        # L_B = firedrake.Constant(5.0e3); L_n = 2 * L_B
-        L_B = firedrake.Constant(2.5e3)
-        L_n = 4 * L_B
-        # L_B = firedrake.Constant(2.0e3); L_n = 3 * L_B
-        # L_B = firedrake.Constant(5.0e3); L_n = 2 * L_B
-
-        R_B = 0.5 / self.area * L_B**2 * inner(grad(θ_B), grad(θ_B)) * firedrake.dx
-        R_n = 0.5 / self.area * L_n**2 * inner(grad(θ_n), grad(θ_n)) * firedrake.dx
-        return R_B + R_n
-
-    def _regularization_rigidity(self, θ_B):
-        L_B = firedrake.Constant(30e3)
-        return 0.5 / self.area * L_B**2 * inner(grad(θ_B), grad(θ_B)) * firedrake.dx
-
     def reset_solver(self):
-        self.solver._diagnostic_solver.setup(
-            velocity=self.u[0],
-            thickness=self.h,
-            norm_rigidity=self.θ_B,
-            norm_exponent=self.θ_n,
-            **self.solver_kwargs,
-        )
+        for k in range(self.Nt):
+            self.solvers[k]._diagnostic_solver.setup(
+                velocity=self.u[k],
+                thickness=self.h,
+                norm_rigidity=self.θ_B,
+                norm_exponent=self.θ_n,
+                **self.solver_kwargs,
+            )
 
 
 # end of file
