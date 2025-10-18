@@ -122,9 +122,9 @@ class DataObjective:
         # Evaluate gradient of data NLL w.r.t. field controls
         grad = self.reduced_nll.derivative()
         if isinstance(grad, (firedrake.Function, firedrake.Constant)):
-            grad_data_controls = np.array(grad.vector()[:])
+            grad_data_controls = grad.dat.data_ro
         else:
-            grad_data_controls = np.stack([g.vector()[:] for g in grad])
+            grad_data_controls = np.stack([g.dat.data_ro for g in grad])
         pause_annotation()
 
         # Use vjp to get gradient w.r.t. latent parameters
@@ -156,8 +156,8 @@ class DataObjective:
         else:
             offset = 0
             for control in self._controls:
-                size = len(control.vector()[:])
-                control.vector()[:] = x[offset : offset + size]
+                size = len(control.dat.data_ro)
+                control.dat.data[:] = x[offset : offset + size]
                 offset += size
 
     def controls_array(self):
