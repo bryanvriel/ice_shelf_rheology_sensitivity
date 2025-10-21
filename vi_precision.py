@@ -111,19 +111,7 @@ class PriorGaussian:
 # ------------------ Variational params via TFP bijector -------------------- #
 # Params are:
 #   params = {"mu": (d,), "z_tril": (d*(d+1)//2,)}
-# L is built via FillScaleTriL.forward(z_tril)
-
-
-def tril_bijector(diag_shift: float = 1e-8) -> tfb.Bijector:
-    # Softplus on diagonal + tiny shift for strict positivity
-    return tfb.FillScaleTriL(
-        diag_bijector=tfb.Softplus(),
-        diag_shift=jnp.array(diag_shift, dtype=jnp.float64),
-    )
-    #return tfb.FillScaleTriL(
-    #    diag_bijector=tfb.Exp(),
-    #    diag_shift=jnp.array(diag_shift, dtype=jnp.float64),
-    #)
+# L/S are built via FillScaleTriL.forward(z_tril)
 
 
 def build_L_from_params(
@@ -131,14 +119,18 @@ def build_L_from_params(
 ) -> jnp.ndarray:
     """Lower-tri L from unconstrained vector using TFP bijector."""
     z = params["z_tril"]
-    return tril_bijector(diag_shift).forward(z)
+    return tril_bij.forward(z)
+
+
+def build_S_from_params(params):
+    return tril_bij.forward(params["z_tril"])  # S lower
 
 
 def pack_from_mu_L(
     mu: jnp.ndarray, L: jnp.ndarray, diag_shift: float = 1e-8
 ) -> Dict[str, jnp.ndarray]:
     """Inverse map: lower-tri L -> unconstrained vector z_tril."""
-    z = tril_bijector(diag_shift).inverse(L)
+    z = tril_bij.inverse(L)
     return {"mu": mu, "z_tril": z}
 
 
