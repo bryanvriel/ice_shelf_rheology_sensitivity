@@ -139,10 +139,8 @@ class IceShelfProblem:
         self.fixed_exponent = fixed_exponent
         if fixed_exponent:
             self.forward = self._forward_rigidity
-            self.regularization = self._regularization_rigidity
         else:
             self.forward = self._forward
-            self.regularization = self._regularization
 
         self._obs_init = False
         self._solver_init = False
