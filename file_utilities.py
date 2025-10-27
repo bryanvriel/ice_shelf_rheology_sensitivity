@@ -4,10 +4,16 @@ import numpy as np
 import jax.numpy as jnp
 import argparse
 import datetime
+import hashlib, unicodedata
 import h5py
+import json
 import sys
 import jax
+import re
 import os
+
+from jbao.utils import DictToStruct
+from typing import Any, Dict, Tuple
 
 
 def common_parse() -> argparse.ArgumentParser:
@@ -274,5 +280,116 @@ def print_file_last_modified(filepath):
     except Exception as e:
         print(f"An error occurred: {e}")
 
+# -------------------------
+# Core utilities for filename creation and parsing
+# -------------------------
+
+def _canonicalize(obj: Any) -> Any:
+    """Recursively convert obj to a JSON-serializable, sorted, stable form."""
+    try:
+        import numpy as np
+        np_types = (np.generic, np.ndarray)
+    except Exception:
+        np_types = tuple()
+
+    if isinstance(obj, dict):
+        return {k: _canonicalize(obj[k]) for k in sorted(obj)}
+    elif isinstance(obj, (list, tuple)):
+        return [_canonicalize(x) for x in obj]
+    elif np_types and isinstance(obj, np_types):
+        # Convert numpy scalars/arrays to py types
+        try:
+            return obj.item()
+        except Exception:
+            return obj.tolist()
+    elif isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    else:
+        # Fallback: stable repr
+        return repr(obj)
+
+def _short_hash(payload: Dict[str, Any], digest_bytes: int = 8) -> str:
+    """Stable short hash (hex) of a payload."""
+    canon = _canonicalize(payload)
+    s = json.dumps(canon, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.blake2b(s.encode("utf-8"), digest_size=digest_bytes).hexdigest()
+
+
+def _is_simple_scalar(v: Any) -> bool:
+    return isinstance(v, (str, int, float, bool)) or v is None
+
+
+def _fmt_simple(v: Any) -> str:
+    if isinstance(v, float):
+        return f"{v:.6g}"            # compact but precise enough
+    if isinstance(v, bool):
+        return "t" if v else "f"
+    if v is None:
+        return "none"
+    return str(v)
+
+
+def _sanitize_filename(s: str) -> str:
+    """ASCII-only, safe characters; collapse repeats; trim edges."""
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    s = re.sub(r"[^A-Za-z0-9._=+-]+", "-", s)  # allow = _ . + -
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    return s
+
+# -------------------------
+# Public API
+# -------------------------
+
+
+def make_results_filename(
+    cfg: DictToStruct,
+    *,
+    prefix: str = "r",
+    ext: str = "h5",
+    max_slug_chars: int = 140,
+    ignore = ["n_iter", "lr_schedule"],
+) -> str:
+    """
+    Create a unique, human-readable results filename from {data,inverse} configs.
+    Only simple top-level scalars are exposed in the slug; everything else is covered
+    by the hash.
+    """
+    # Unpack dictionaries
+    data_cfg = cfg.data.todict()
+    inverse_cfg = cfg.inverse.todict()
+    outdir = cfg.output_dir
+
+    # Delete non-parameter fields from inverse section
+    for key in ignore:
+        del inverse_cfg[key]
+
+    # Build human-readable tokens from simple top-level scalars (sorted by key)
+    items = {
+        "d": ["u_sigma", "amp", "loc"],
+        "inv": ["B_norm_type",],
+    }
+    tokens = []
+    for sect_tag, cfg in (("d", data_cfg), ("inv", inverse_cfg)):
+        for k in items[sect_tag]:
+            v = cfg[k]
+            if _is_simple_scalar(v):
+                tokens.append(f"{sect_tag}.{k}={_fmt_simple(v)}")
+
+    # Keep it short but useful
+    slug = "__".join(tokens)
+    if len(slug) > max_slug_chars:
+        slug = slug[:max_slug_chars].rstrip("_-")
+
+    # Stable short hash over the full canonicalized configs
+    digest = _short_hash({"data": data_cfg, "inverse": inverse_cfg})
+
+    # Assemble + sanitize
+    pieces = [prefix]
+    if slug:
+        pieces.append(slug)
+    pieces.append(digest)
+    base = "__".join(pieces)
+    fname = _sanitize_filename(base) + f".{ext.lstrip('.')}"
+    return os.path.join(outdir, fname)
 
 # end of file
