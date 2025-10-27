@@ -13,7 +13,10 @@ from tensorflow_probability.substrates import jax as tfp
 tfb = tfp.bijectors
 tfd = tfp.distributions
 
-from mpi4py import MPI
+try:
+    from mpi4py import MPI
+except ModuleNotFoundError:
+    print('No mpi4py installed. No MPI functionality can be used.')
 
 Array = jnp.ndarray
 Params = Dict[str, Array]  # {"mean": (n,), "raw_tril": (n*(n+1)//2,)}
