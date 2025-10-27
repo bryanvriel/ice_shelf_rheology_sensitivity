@@ -82,6 +82,14 @@ def inv_norm_arctan(θ, low=0.1, high=5.0, tau=1.0):
     return m + s * firedrake.atan(θ / tau)
 
 
+def inv_norm_log(θ, C0=1.0):
+    return C0 * firedrake.exp(θ)
+
+
+def fwd_norm_log(x, C0=1.0):
+    return firedrake.ln(x) - firedrake.ln(C0)
+
+
 def fwd_norm_arctan(θ, low=0.1, high=5.0, tau=1.0):
     L = low
     U = high
