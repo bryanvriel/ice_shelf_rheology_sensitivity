@@ -1,12 +1,13 @@
 #-*- coding: utf-8 -*-
 
+from functools import partial
 import numpy as np
 import h5py
 import os
 from typing import Optional, Tuple
 
 import firedrake
-from firedrake import inner
+from firedrake import inner, assemble
 import icepack
 from icepack.calculus import grad
 import rasterio
@@ -50,7 +51,8 @@ class IceShelfProblem:
         nll_scale=1.0,
         default_vel_error=10.0,
         solver_type="petsc",
-        norm="log",
+        n_norm="tanh",
+        B_norm="log",
         fixed_exponent=False,
     ):
 
@@ -75,7 +77,7 @@ class IceShelfProblem:
         # the scale of the likelihood because we assume independent observations
         # By using this "density" based scaling, the data likelihood becomes
         # invariant to the size of the modeling domain (e.g., Brinkerhoff, 2021)
-        area = firedrake.assemble(firedrake.Constant(1.0) * firedrake.dx(self.mesh))
+        area = assemble(firedrake.Constant(1.0) * firedrake.dx(self.mesh))
         self.area = area
         self.nll_scale = firedrake.Constant(nll_scale / area)
 
@@ -85,31 +87,9 @@ class IceShelfProblem:
         self._dirichlet_ids = dirichlet_ids
         self._side_wall_ids = side_wall_ids
 
-        # Initialize flow model
-        if norm == "log":
-            self.model = models.CustomIceShelf(viscosity=models.normalized_rheology_log)
-            self.unnormalize_rheology = models.unnormalize_rheology_log
-            self.norm_type = "log"
-        elif norm == "tanh":
-            self.model = models.CustomIceShelf(viscosity=models.normalized_rheology)
-            self.unnormalize_rheology = models.unnormalize_rheology
-            self.norm_type = "tanh"
-        elif norm == "arctan":
-            self.model = models.CustomIceShelf(viscosity=models.normalized_rheology_arctan)
-            self.unnormalize_rheology = models.unnormalize_rheology_arctan
-            self.norm_type = "arctan"
-        else:
-            raise ValueError
-
-        # Static flow solver arguments (these flow through pyadoint)
-        # These have to be R-space functions rather than Constants in order
-        # to avoid 'Constant requires a domain to work with pyadjoint' errors
-        self.solver_kwargs = {
-            "B_min": const_to_R_fn(cfg.model.B_min, self.R),
-            "B_max": const_to_R_fn(cfg.model.B_max, self.R),
-            "n_min": const_to_R_fn(cfg.model.n_min, self.R),
-            "n_max": const_to_R_fn(cfg.model.n_max, self.R),
-        }
+        # Initialize flow model and normalization functions
+        self.model = models.CustomIceShelf()
+        self.init_normalizers(B_norm, n_norm, cfg)
 
         # Initialize constants
         self.Cs = firedrake.Constant(side_friction)
@@ -208,7 +188,7 @@ class IceShelfProblem:
                 ("h", "u", "e_xx", "e_xy", "e_yy")
             ]
             grid_coords = (fid["x"][()], fid["y"][()])
-        
+
             if time_ind is None:
                 self.Nt = u.shape[0]
                 time_ind = range(self.Nt)
@@ -252,18 +232,8 @@ class IceShelfProblem:
         with rasterio.open(os.path.join(dirname, "n_exp.tif")) as r_n:
             n_fn = icepack.interpolate(r_n, self.Q)
 
-        if self.norm_type == "tanh":
-            θ_n = models.fwd_norm_tanh(
-                n_fn, low=self.solver_kwargs["n_min"], high=self.solver_kwargs["n_max"],
-            )
-        elif self.norm_type == "arctan":
-            θ_n = models.fwd_norm_arctan(
-                n_fn, low=self.solver_kwargs["n_min"], high=self.solver_kwargs["n_max"],
-            )
-        else:
-            θ_n = firedrake.ln(n_fn)
-
-        self.θ_n = firedrake.assemble(firedrake.interpolate(θ_n, self.Q))
+        θ_n = self._fwd_norm_n(n_fn)
+        self.θ_n = assemble(firedrake.interpolate(θ_n, self.Q))
 
     def init_solvers(self):
         self.solvers = []
@@ -277,17 +247,48 @@ class IceShelfProblem:
             self.solvers.append(solver)
         self._solver_init = True
 
+    def init_normalizers(self, B_norm, n_norm, cfg):
+        params = {
+            "B": {"low": cfg.model.B_min, "high": cfg.model.B_max, "C0": 1.0},
+            "n": {"low": cfg.model.n_min, "high": cfg.model.n_max, "C0": 3.0},
+        }
+
+        # Create inverse normalizers
+        def create_fn(norm_type, key):
+            p = params[key]
+            if norm_type == "log":
+                inv = partial(models.inv_norm_log, C0=p["C0"])
+                fwd = partial(models.fwd_norm_log, C0=p["C0"])
+            elif norm_type == "tanh":
+                inv = partial(models.inv_norm_tanh, low=p["low"], high=p["high"])
+                fwd = partial(models.fwd_norm_tanh, low=p["low"], high=p["high"])
+            elif norm_type == "arctan":
+                inv = partial(models.inv_norm_arctan, low=p["low"], high=p["high"])
+                fwd = partial(models.fwd_norm_arctan, low=p["low"], high=p["high"])
+            else:
+                raise ValueError("Unsupported norm type.")
+
+            return inv, fwd
+
+        self._inv_norm_B, self._fwd_norm_B = create_fn(B_norm, "B")
+        self._inv_norm_n, self._fwd_norm_n = create_fn(n_norm, "n")
+
     def _forward(self, params):
+
+        # Unpack and un-normalize parameters
         θ_B, θ_n = params
+        B = assemble(firedrake.interpolate(self._inv_norm_B(θ_B), self.Q))
+        n_exp = assemble(firedrake.interpolate(self._inv_norm_n(θ_n), self.Q))
+
+        # Loop over epochs to compute velocities
         u_pred = []
         for k in range(self.Nt):
             u_pred.append(
                 self.solvers[k].diagnostic_solve(
                     velocity=self.u[k],
                     thickness=self.h,
-                    norm_rigidity=θ_B,
-                    norm_exponent=θ_n,
-                    **self.solver_kwargs,
+                    rigidity=B,
+                    exponent=n_exp,
                 )
             )
 
@@ -336,7 +337,7 @@ class IceShelfProblem:
         e1_yy = firedrake.project(ε_1[1, 1], Q)
 
         return [u0, u1, e0_xx, e0_xy, e0_yy, e1_xx, e1_xy, e1_yy]
-    
+
     def data_nll(self, u_pred):
         misfits = []
         for k in range(self.Nt):
@@ -386,9 +387,8 @@ class IceShelfProblem:
             self.solvers[k]._diagnostic_solver.setup(
                 velocity=self.u[k],
                 thickness=self.h,
-                norm_rigidity=self.θ_B,
-                norm_exponent=self.θ_n,
-                **self.solver_kwargs,
+                rigidity=self.θ_B,
+                exponent=self.θ_n,
             )
 
 
