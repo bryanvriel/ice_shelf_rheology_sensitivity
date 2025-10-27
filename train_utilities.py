@@ -77,26 +77,18 @@ def initialize_objects(
     mesh = make_mesh(meshfile=cfg.inverse.meshfile, comm=comm)
 
     # Now, create a problem with a more reasonable area scale
+    kwargs = dict(
+        nll_scale=cfg.inverse.nll_scale,
+        degree=mesh_degree,
+        B_norm=cfg.inverse.B_norm_type,
+        n_norm=cfg.inverse.n_norm_type,
+        default_vel_error=cfg.data.u_sigma,
+    )
     if cfg.inverse.joint:
-        problem = IceShelfProblem(
-            cfg,
-            mesh,
-            nll_scale=cfg.inverse.nll_scale,
-            degree=mesh_degree,
-            norm=cfg.inverse.norm_type,
-            default_vel_error=cfg.data.u_sigma,
-        )
+        problem = IceShelfProblem(cfg, mesh, **kwargs)
         problem.load_observations(data_file, time_ind=time_ind)
     else:
-        problem = IceShelfProblem(
-            cfg,
-            mesh,
-            nll_scale=cfg.inverse.nll_scale,
-            fixed_exponent=True,
-            degree=mesh_degree,
-            norm=cfg.inverse.norm_type,
-            default_vel_error=cfg.data.u_sigma,
-        )
+        problem = IceShelfProblem(cfg, mesh, fixed_exponent=True, **kwargs)
         problem.load_observations(data_file, time_ind=time_ind)
         problem.load_rheology(outdir)
     problem.init_solvers()
@@ -250,9 +242,9 @@ def optimize_sgd(
     optimizer,
     opt_state,
     n_iter,
-    verbose=None,
     loss_fn=None,
     thresh=0.0,
+    callback=None,
 ):
 
     @jax.jit
@@ -280,14 +272,13 @@ def optimize_sgd(
             loss_val,
             grad_val,
         )
-        if verbose is not None:
-            if k % verbose == 0:
-                gnorm = np.linalg.norm(grad_val)
-                print(f"Iter {k:5d}: f = {loss_val}, g = {gnorm}")
         losses[k] = loss_val
         if loss_val < thresh:
             losses = losses[:k]
             break
+
+        if callback is not None:
+            callback(k, x0, losses[:k+1], grad_val)
 
     return x0, opt_state, losses
 
@@ -472,11 +463,8 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
 
     # Evaluate rheology fields
     out_preds = {"z": z, "x": x_out, "y": y_out}
-    B, n = problem.unnormalize_rheology(
-        norm_rigidity=θ_B,
-        norm_exponent=θ_n,
-        **problem.solver_kwargs,
-    )
+    B = problem._inv_norm_B(θ_B)
+    n = problem._inv_norm_n(θ_n)
 
     out_preds["B"] = converter(assemble(fd_interpolate(B, problem.Q)))
     out_preds["n"] = converter(assemble(fd_interpolate(n, problem.Q)))
