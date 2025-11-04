@@ -48,6 +48,7 @@ class SVIFullRankGaussian:
         antithetic: bool = True,
         dtype=jnp.float64,
         diag_shift: float = 1e-5,
+        beta_kl: float = 1.0,
         comm = None,
     ):
         self.loglik_fn = loglik_fn
@@ -57,6 +58,7 @@ class SVIFullRankGaussian:
         self.antithetic = bool(antithetic)
         self.dtype = dtype
         self.n_dim = prior_mean.size
+        self.β_kl = beta_kl
 
         # Bijector mapping unconstrained vector -> lower-triangular scale
         # with positive diag
@@ -215,7 +217,7 @@ class SVIFullRankGaussian:
         delta = (m - mu0)
         quad = delta @ (Q @ delta)
         logdet_Sigma = 2.0 * jnp.sum(jnp.log(jnp.diag(L)))
-        return 0.5 * (tr_QSigma + quad - n - logdet_Q - logdet_Sigma)
+        return 0.5 * self.β_kl * (tr_QSigma + quad - n - logdet_Q - logdet_Sigma)
 
     def elbo_loss_vmap(
         self, params: Params, rng_key: Array
