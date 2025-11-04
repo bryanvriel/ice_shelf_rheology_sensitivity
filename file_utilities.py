@@ -347,7 +347,7 @@ def make_results_filename(
     prefix: str = "r",
     ext: str = "h5",
     max_slug_chars: int = 140,
-    ignore = ["n_iter", "lr_schedule"],
+    ignore = ["n_iter", "lr_schedule", "lr", "objective_scale"],
 ) -> str:
     """
     Create a unique, human-readable results filename from {data,inverse} configs.
