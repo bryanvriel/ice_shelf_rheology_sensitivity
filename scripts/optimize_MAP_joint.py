@@ -18,48 +18,11 @@ from schurflow.utilities import *
 import optax
 
 def parse():
-    parser = argparse.ArgumentParser(description="Run inverson for rigidity.")
-
-    parser.add_argument("cfg", type=str, help="Input configuration file.")
-
-    parser.add_argument(
-        "--amp",
-        action="store",
-        type=str,
-        default="mid",
-        help="Amplitude from (low, mid, high). Default: mid.",
+    parser = argparse.ArgumentParser(
+        description="Run joint inversion.",
+        parents=[fu.common_parse()],
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-
-    parser.add_argument(
-        "--loc",
-        action="store",
-        type=str,
-        default="terminus",
-        help="Perturbation location from (terminus, GL). Default: terminus.",
-    )
-
-    parser.add_argument(
-        "-r",
-        action="store_true",
-        dest="restore",
-        help="Restore from previous solution.",
-    )
-    
-    parser.add_argument(
-        "-rs",
-        action="store",
-        type=int,
-        default=1,
-        dest="restore_stage",
-        help="Integer stage to restore from. Default: 1.",
-    )
-
-    parser.add_argument(
-        "-sgd",
-        action="store_true",
-        help="Force optimizer to be SGD.",
-    )
-
     return parser.parse_known_args()
 
 
@@ -67,6 +30,7 @@ def main(cfg, args):
 
     outdir = cfg.output_dir
     data_file = fu.data_filename(cfg, args)
+    print('Data file:', data_file)
 
     # Create objects
     field, problem, objective, converter = tu.initialize_objects(
@@ -74,7 +38,7 @@ def main(cfg, args):
     )
 
     # Output filename
-    outfile = fu.generate_filename(cfg, args.loc, args.amp)
+    outfile = fu.make_results_filename(cfg)
     print('Output file:', outfile)
 
     # Restore from previous
@@ -82,13 +46,14 @@ def main(cfg, args):
         with h5py.File(outfile, "r") as fid:
             z = fid[f"stage{args.restore_stage}/z"][()]
     else:
-        rng = np.random.default_rng(2425)
+        rng = np.random.default_rng(4444)
         z = 0.05 * rng.standard_normal((field.N,))
+        #z = np.zeros(field.N)
     print('Number of parameters:', z.size)
 
     # Create optimizer
-    lr_schedule = tu.create_lr_schedule(cfg.inverse.lr_schedule)
-    opt, opt_state = tu.init_optimizer(cfg.inverse.opt_type, z, lr_schedule)
+    lr = tu.create_lr_schedule(cfg.inverse.lr_schedule, cfg.inverse.lr)
+    opt, opt_state = tu.init_optimizer(cfg.inverse.opt_type, z, lr)
     print('Optimizer:', cfg.inverse.opt_type)
    
     # Attempt to restore optimizer state from previous stage 
@@ -111,6 +76,43 @@ def main(cfg, args):
         file_mode = "w"
     print("Optimizing for stage", stage)
 
+    #z, opt_state, losses = tu.optimize_bfgs(
+    #    objective,
+    #    z,
+    #    factr=0.001,
+    #    maxcor=10,
+    #    method="L-BFGS-B",
+    #)
+    #opt_state = opt.init(z)
+
+    def callback(i, z, losses, grad_val):
+
+        # Periodic diagnostic
+        if i % 50 == 0 and grad_val is not None:
+            gnorm = np.linalg.norm(grad_val)
+            print(f"Iter {i:5d}: f = {losses[-1]}, g = {gnorm}")
+
+        # Periodic prediction generation and savek
+        if i % 100 == 0:
+
+            # Generate predictions
+            preds = tu.generate_predictions(
+                z,
+                field,
+                problem,
+                objective,
+                converter,
+            )
+
+            # Write results to file
+            fu.write_results_to_file(
+                outfile,
+                preds,
+                group=f"stage{stage}",
+                mode=file_mode,
+                extra_data={"losses": losses},
+            )
+
     # Run it
     z, opt_state, losses = tu.optimize_sgd(
         objective,
@@ -118,25 +120,10 @@ def main(cfg, args):
         opt,
         opt_state,
         cfg.inverse.n_iter,
-        verbose=50,
-        thresh=0,
+        callback=callback,
     )
-
-    preds = tu.generate_predictions(
-        z,
-        field,
-        problem,
-        objective,
-        converter,
-    )
-
-    fu.write_results_to_file(
-        outfile,
-        preds,
-        group=f"stage{stage}",
-        mode=file_mode,
-        extra_data={"losses": losses},
-    )
+   
+    callback(0, z, losses, None) 
     fu.save_state_to_group(
         opt_state, cfg.inverse.opt_type, outfile, f"stage{stage}/optimizer",
     )
