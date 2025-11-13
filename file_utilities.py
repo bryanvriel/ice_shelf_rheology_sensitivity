@@ -369,11 +369,15 @@ def make_results_filename(
         "inv": ["B_norm_type",],
     }
     tokens = []
-    for sect_tag, cfg in (("d", data_cfg), ("inv", inverse_cfg)):
+    for sect_tag, _cfg in (("d", data_cfg), ("inv", inverse_cfg)):
         for k in items[sect_tag]:
-            v = cfg[k]
+            v = _cfg[k]
             if _is_simple_scalar(v):
                 tokens.append(f"{sect_tag}.{k}={_fmt_simple(v)}")
+
+    # Add a token for spectral matrix
+    if cfg.matrix.spectral:
+        tokens.append("spectral")
 
     # Keep it short but useful
     slug = "__".join(tokens)
