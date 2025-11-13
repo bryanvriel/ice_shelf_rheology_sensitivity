@@ -265,6 +265,9 @@ class IceShelfProblem:
             elif norm_type == "arctan":
                 inv = partial(models.inv_norm_arctan, low=p["low"], high=p["high"])
                 fwd = partial(models.fwd_norm_arctan, low=p["low"], high=p["high"])
+            elif norm_type == "cdf":
+                inv = partial(models.inv_norm_cdf, low=p["low"], high=p["high"])
+                fwd = partial(models.fwd_norm_cdf, low=p["low"], high=p["high"])
             else:
                 raise ValueError("Unsupported norm type.")
 
