@@ -104,7 +104,7 @@ def initialize_objects(
 
 
 def threshold_spectral_matrix(
-    L_min, target_std=0.5, apply_sensitivity=False, outdir=None
+    L_min, target_std=0.2, apply_sensitivity=False, outdir=None
 ):
 
     # Read reference matrix data
@@ -330,7 +330,7 @@ def init_optimizer(opt_type, params, learning_rate):
     return optimizer, opt_state
 
 
-def create_lr_schedule(schedule_list, opt_type="adabelief", opt_args={}):
+def create_lr_schedule(schedule_list, ref_lr):
     """
     Create an Adam optimizer with a piecewise constant learning rate schedule.
 
@@ -342,8 +342,8 @@ def create_lr_schedule(schedule_list, opt_type="adabelief", opt_args={}):
     Returns:
         optax.GradientTransformation: Adam optimizer with schedule
     """
-    if isinstance(schedule_list, (float, int)):
-        schedule_list = [[0, schedule_list]]
+    if len(schedule_list) == 0:
+        schedule_list = [[0, ref_lr]]
 
     if schedule_list[0][0] != 0:
         raise ValueError("Schedule must start with step 0")
