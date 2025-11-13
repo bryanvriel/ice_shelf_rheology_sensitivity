@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
+from scipy.special import erfinv
 import sys
 
 import firedrake
@@ -80,6 +81,20 @@ def inv_norm_arctan(θ, low=0.1, high=5.0, tau=1.0):
     r = 0.5 * (high - low)
     s = 2 / np.pi * r
     return m + s * firedrake.atan(θ / tau)
+
+
+def inv_norm_cdf(θ, low=0.1, high=5.0):
+    u = 0.5 * (1.0 + firedrake.erf(θ / firedrake.sqrt(2.0)))
+    return low + (high - low) * u
+
+
+def fwd_norm_cdf(x, low=0.1, high=5.0):
+    out = firedrake.Function(x.function_space())
+    x_arr = x.dat.data_ro
+    u = (x.dat.data_ro - low) / (high - low)
+    u = np.clip(u, 1e-12, 1 - 1e-12)
+    out.dat.data[:] = np.sqrt(2) * erfinv(2 * u - 1)
+    return out
 
 
 def inv_norm_log(θ, C0=1.0):
