@@ -166,7 +166,7 @@ def save_raster(data, x_coords, y_coords, filename, mid=False):
 
 def write_results_to_file(filename, preds, group=None, mode="a", extra_data={}):
 
-    meta_keys = ("x", "y", "z")
+    meta_keys = ("x", "y", "z", "final_loss")
     with h5py.File(filename, mode) as fid:
 
         if group is not None:
