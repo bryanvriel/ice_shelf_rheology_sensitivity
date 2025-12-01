@@ -469,6 +469,9 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
 
     problem.reset_solver()
 
+    # Get loss function
+    loss = objective.loss(z)
+
     # Unpack to controls
     if z is not None and θ_np is None:
         θ_np = field(z)
@@ -490,7 +493,7 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
     y_out = np.linspace(converter.yarr[0], converter.yarr[-1], Ny_out)
 
     # Evaluate rheology fields
-    out_preds = {"z": z, "x": x_out, "y": y_out}
+    out_preds = {"z": z, "x": x_out, "y": y_out, "final_loss": loss}
     B = problem._inv_norm_B(θ_B)
     n = problem._inv_norm_n(θ_n)
 
