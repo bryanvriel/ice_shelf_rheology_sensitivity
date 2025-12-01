@@ -29,6 +29,7 @@ from .problems import make_mesh, IceShelfProblem
 from .objectives import PosteriorObjective, DataObjective
 from .fields import SingleFieldMatrix, RheologyFieldMatrix
 from .utilities import NumpyConverter
+from .file_utilities import make_matrix_filename
 
 # ---------------------------------------------------------------------------
 # Factories
@@ -51,7 +52,7 @@ def initialize_objects(
     if cfg.matrix.spectral:
         matfile = threshold_spectral_matrix(cfg.matrix.spectral_L_min)
     else:
-        matfile = os.path.join(outdir, "matrix_data.h5")
+        matfile = make_matrix_filename(cfg)
     precondition = cfg.inverse.precondition
     if cfg.inverse.joint:
         field = RheologyFieldMatrix(
@@ -123,7 +124,7 @@ def threshold_spectral_matrix(
     L_min = 1e3 * L_min
     σ_c = Θ / L_min
     eval_thresh = (2 * np.pi / L_min) ** 2
-    mask = (evals <= eval_thresh)
+    mask = evals <= eval_thresh
 
     # Read sensitivity if requested
     if apply_sensitivity:
@@ -132,7 +133,7 @@ def threshold_spectral_matrix(
         with h5py.File(path, "r") as fid:
             S = fid["s_mesh"][()]
         SG = np.abs(S @ matrix_data["B"]["G"]) / np.sqrt(evals)
-        mask *= (SG >= 1e8)
+        mask *= SG >= 1e8
 
     # Mask the matrices and scale the columns
     evals = evals[mask]
@@ -167,6 +168,7 @@ def threshold_spectral_matrix(
 # Inversion tools
 # ---------------------------------------------------------------------------
 
+
 class InfoState(NamedTuple):
     iter_num: chex.Numeric
 
@@ -188,6 +190,25 @@ def print_info():
         return updates, InfoState(iter_num=state.iter_num + 1)
 
     return optax.GradientTransformationExtraArgs(init_fn, update_fn)
+
+
+# Define a class to hold state (iteration count + history)
+class CallbackTracker:
+    def __init__(self):
+        self.nit = 0
+        self.losses = []
+
+    def __call__(self, intermediate_result):
+        # 1. Increment iteration counter
+        self.nit += 1
+
+        # 2. Save the iteration number and loss value
+        loss = intermediate_result.fun
+        self.losses.append(loss)
+
+        # Optional: Print live progress
+        if self.nit % 50 == 0:  # Print every 10 iterations
+            print(f"Iter: {self.nit}, Loss: {loss:.5f}")
 
 
 def optimize_bfgs(
@@ -220,6 +241,8 @@ def optimize_bfgs(
             "gtol": 1e-6,
         }
 
+    tracker = CallbackTracker()
+
     # Run optimization
     with Timer(f"Performing optimization with {method}"):
         result = minimize(
@@ -228,12 +251,17 @@ def optimize_bfgs(
             jac=True,
             method=method,
             options=options,
+            callback=tracker,
         )
         print(result.message)
-        print('Final function value:', result.fun)
-        print('Number of iterations:', result.nit)
+        print("Final function value:", result.fun)
+        print("Number of iterations:", result.nit)
 
-    return result.x, {}, [result.fun,]
+    return (
+        result.x,
+        {},
+        tracker.losses,
+    )
 
 
 def optimize_sgd(
@@ -278,7 +306,7 @@ def optimize_sgd(
             break
 
         if callback is not None:
-            callback(k, x0, losses[:k+1], grad_val)
+            callback(k, x0, opt_state, losses[: k + 1], grad_val)
 
     return x0, opt_state, losses
 
