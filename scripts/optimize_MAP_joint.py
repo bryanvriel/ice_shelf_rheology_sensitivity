@@ -60,7 +60,7 @@ def main(cfg, args):
         print("Optimizer:", cfg.inverse.opt_type)
 
     # Attempt to restore optimizer state from previous stage
-    if args.restore:
+    if args.restore and cfg.inverse.opt_type != 'bfgs':
         try:
             test_opt_state, opt_type = fu.load_state_from_group(
                 opt_state,
