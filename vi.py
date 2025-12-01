@@ -7,20 +7,23 @@ import jax
 from jax import numpy as jnp
 from jax import random, value_and_grad
 from jax.scipy.linalg import solve_triangular, cho_solve
+from jax.scipy.special import expit
 import optax
 
 from tensorflow_probability.substrates import jax as tfp
+
 tfb = tfp.bijectors
 tfd = tfp.distributions
 
 try:
     from mpi4py import MPI
 except ModuleNotFoundError:
-    print('No mpi4py installed. No MPI functionality can be used.')
+    print("No mpi4py installed. No MPI functionality can be used.")
 
 Array = jnp.ndarray
 Params = Dict[str, Array]  # {"mean": (n,), "raw_tril": (n*(n+1)//2,)}
 Grads = Dict[str, Array]
+
 
 class SVIFullRankGaussian:
     """
@@ -49,7 +52,7 @@ class SVIFullRankGaussian:
         dtype=jnp.float64,
         diag_shift: float = 1e-5,
         beta_kl: float = 1.0,
-        comm = None,
+        comm=None,
     ):
         self.loglik_fn = loglik_fn
         self.prior_mean = jnp.asarray(prior_mean, dtype=dtype)
@@ -96,7 +99,9 @@ class SVIFullRankGaussian:
 
     def _scatter_eps(self, array):
         self.comm.Scatterv(
-            [array, self.vector_counts, MPI.DOUBLE], self.eps, root=0,
+            [array, self.vector_counts, MPI.DOUBLE],
+            self.eps,
+            root=0,
         )
 
     def _gather_logP(self, array):
@@ -138,8 +143,8 @@ class SVIFullRankGaussian:
         H = jnp.asarray(make_spd(hessian_at_map), dtype=dtype)
         n = theta_map.shape[0]
 
-        C = jnp.linalg.cholesky(H)                             # H = C C^T
-        Sigma0 = cho_solve((C, True), jnp.eye(n, dtype=dtype)) # Solve H * Σ_0 = I
+        C = jnp.linalg.cholesky(H)  # H = C C^T
+        Sigma0 = cho_solve((C, True), jnp.eye(n, dtype=dtype))  # Solve H * Σ_0 = I
         Sigma0 = 0.5 * (Sigma0 + Sigma0.T)
         L0 = jnp.linalg.cholesky(Sigma0)
 
@@ -159,11 +164,13 @@ class SVIFullRankGaussian:
             theta = m + eps @ L^T
         First argument is `params` (PyTree), so we can do vjp wrt params.
         """
-        m = params["mean"].astype(self.dtype) # (d,)
-        L = self.scale_tril(params)           # (d, d), lower-tri
-        return m[None, :] + eps @ L.T         # (M, d)
+        m = params["mean"].astype(self.dtype)  # (d,)
+        L = self.scale_tril(params)  # (d, d), lower-tri
+        return m[None, :] + eps @ L.T  # (M, d)
 
-    def sample_eps(self, key: Array, n: int, antithetic: Optional[bool] = None) -> Array:
+    def sample_eps(
+        self, key: Array, n: int, antithetic: Optional[bool] = None
+    ) -> Array:
         """
         Samples only the normal variable eps to be used in reparameterization.
         """
@@ -214,7 +221,7 @@ class SVIFullRankGaussian:
         # Compute KL
         QL = Q @ L
         tr_QSigma = jnp.sum(QL * L)
-        delta = (m - mu0)
+        delta = m - mu0
         quad = delta @ (Q @ delta)
         logdet_Sigma = 2.0 * jnp.sum(jnp.log(jnp.diag(L)))
         return 0.5 * self.β_kl * (tr_QSigma + quad - n - logdet_Q - logdet_Sigma)
@@ -298,9 +305,7 @@ class SVIFullRankGaussian:
         grad_logP = vjpfun(grad_logP)[0]
 
         # Compute KL-divergence (deterministic)
-        kl, grad_kl = jax.value_and_grad(
-            lambda p: self.kl_fullrank_prior(p)
-        )(params)
+        kl, grad_kl = jax.value_and_grad(lambda p: self.kl_fullrank_prior(p))(params)
 
         # Negative ELBO and grad
         loss = -1 * (logP - kl)
@@ -334,6 +339,7 @@ class SVIFullRankGaussian:
         """
 
         if jit:
+
             @jax.jit
             def step(pr: Params, opt_state, rng):
                 rng, sub = random.split(rng)
@@ -343,7 +349,9 @@ class SVIFullRankGaussian:
                 updates, opt_state = tx.update(grads, opt_state, pr)
                 pr = optax.apply_updates(pr, updates)
                 return pr, opt_state, rng, loss, metrics
+
         else:
+
             def step(pr: Params, opt_state, rng):
                 rng, sub = random.split(rng)
                 loss, grads, metrics = self.elbo_loss_mpi(pr, sub)
@@ -362,18 +370,20 @@ class SVIFullRankGaussian:
             if self.mpi_rank == 0 and callback is not None:
                 logP[t] = metrics["logP"]
                 kl[t] = metrics["kl"]
-                callback(t, logP[:t+1], kl[:t+1], params, opt_state, rng)
+                callback(t, logP[: t + 1], kl[: t + 1], params, opt_state, rng)
 
         return params, opt_state, rng, logP, kl
 
+
 # ---------- Natural Gradient Descent transformation --------
+
 
 def make_natgrad_transform_for_svi(
     *,
     bijector: tfb.Bijector,
     dtype=jnp.float64,
-    cov_damping: float = 0.0,   # optional: Σ ← Σ + λI inside preconditioner
-    project_lower: bool = True, # keep lower-tri tangents for stability
+    cov_damping: float = 0.0,  # optional: Σ ← Σ + λI inside preconditioner
+    project_lower: bool = True,  # keep lower-tri tangents for stability
 ) -> optax.GradientTransformation:
     """
     Natural-gradient preconditioner for q(θ)=N(m, Σ), params:
@@ -391,15 +401,15 @@ def make_natgrad_transform_for_svi(
 
     def update_fn(grads: Grads, state, params: Params):
         # Unpack & reconstruct
-        m   = params["mean"].astype(dtype)
+        m = params["mean"].astype(dtype)
         raw = params["raw_tril"].astype(dtype)
-        L   = bijector.forward(raw).astype(dtype)         # (d,d), lower-tri
+        L = bijector.forward(raw).astype(dtype)  # (d,d), lower-tri
         Sigma = L @ L.T
         if cov_damping > 0.0:
             Sigma = Sigma + cov_damping * jnp.eye(Sigma.shape[0], dtype=dtype)
 
         # --- Mean block: nat-grad(m) = Σ * grad(m) ---
-        g_m     = grads["mean"].astype(dtype)
+        g_m = grads["mean"].astype(dtype)
         nat_g_m = Sigma @ g_m
 
         # --- Covariance block ---
@@ -407,14 +417,14 @@ def make_natgrad_transform_for_svi(
         inv = lambda L_: bijector.inverse(L_)
         _, pullback_inv = jax.vjp(inv, L)
         g_raw = grads["raw_tril"].astype(dtype)
-        (g_L,) = pullback_inv(g_raw)                      # (d,d)
+        (g_L,) = pullback_inv(g_raw)  # (d,d)
         if project_lower:
             g_L = jnp.tril(g_L)
 
         # Convert g_L -> G_Sigma = 0.5 * g_L * L^{-1}   (optionally symmetrize)
         # Compute Y = g_L * L^{-1} via RIGHT triangular solve:  Y^T solves L^T Y^T = g_L^T
-        Yt = solve_triangular(L.T, g_L.T, lower=False)    # Yt = L^{-T} g_L^T
-        Y  = Yt.T                                         # Y = g_L L^{-1}
+        Yt = solve_triangular(L.T, g_L.T, lower=False)  # Yt = L^{-T} g_L^T
+        Y = Yt.T  # Y = g_L L^{-1}
         G_Sigma = 0.5 * Y
         # Be safe numerically:
         G_Sigma = 0.5 * (G_Sigma + G_Sigma.T)
@@ -424,7 +434,7 @@ def make_natgrad_transform_for_svi(
 
         # Map ΔΣ -> δL with δL = 0.5 ΔΣ L^{-T}  (exactly yields dΣ = ΔΣ)
         tmp = solve_triangular(L, Delta_Sigma.T, lower=True)  # tmp = L^{-1} ΔΣ^T
-        dL  = 0.5 * tmp.T                                     # δL = 0.5 ΔΣ L^{-T}
+        dL = 0.5 * tmp.T  # δL = 0.5 ΔΣ L^{-T}
         if project_lower:
             dL = jnp.tril(dL)
 
@@ -438,7 +448,93 @@ def make_natgrad_transform_for_svi(
     return optax.GradientTransformation(init_fn, update_fn)
 
 
+def natural_gradient_transform(
+   bijector: tfb.Bijector,
+    damping: float = 1e-5,   # Damping for numerical stability
+) -> optax.GradientTransformation:
+    """
+    AD-based Natural Gradient. Robust and correct.
+    Recommended for PDE-constrained problems.
+    """
+
+    def init_fn(params):
+        return optax.EmptyState()
+
+    def update_fn(grads, state, params):
+        # 1. Setup
+        m = params["mean"]
+        raw = params["raw_tril"]
+
+        # Forward pass through bijector (Cheap)
+        L = bijector.forward(raw)
+
+        # 2. Mean Update: nat_grad_mu = (Sigma + damping*I) @ grad_mu
+        # Efficient computation: L @ (L.T @ g_m)
+        g_m = grads["mean"]
+        Lt_gm = L.T @ g_m
+        nat_g_m = L @ Lt_gm + damping * g_m
+
+        # 3. Covariance Update
+        # Pullback: Map gradient from raw-space to L-space
+        # This uses JAX AD to handle the Softplus/Chain-rule correctly
+        inv = lambda L_: bijector.inverse(L_)
+        _, pullback_inv = jax.vjp(inv, L)
+        g_raw = grads["raw_tril"]
+        (g_L,) = pullback_inv(g_raw)
+
+        # Project gradients to lower triangle (clean up AD noise)
+        g_L = jnp.tril(g_L)
+
+        # Compute Natural Gradient direction in L-space
+        # We solve: nat_g_L = L * tril(L^T * g_L) - ...
+        # But doing it in Sigma space is often more stable for AD.
+
+        # Method: Convert g_L -> Natural Gradient in Sigma space
+        # Y = g_L @ inv(L)
+        # We use solve_triangular for stability
+        # Y^T = inv(L)^T @ g_L^T = solve(L.T, g_L.T)
+        Yt = solve_triangular(L.T, g_L.T, lower=False)
+        Y = Yt.T
+
+        # Symmetrize the gradient in Sigma space (Crucial Step)
+        # G_Sigma = 0.5 * (Y + Y.T)
+        G_Sigma = 0.5 * (Y + Y.T)
+
+        # Natural Gradient Step in Sigma space:
+        # Delta_Sigma = 2 * Sigma @ G_Sigma @ Sigma
+        # Efficiently: Sigma = L @ L.T
+        # Delta_Sigma = 2 * L @ L.T @ G_Sigma @ L @ L.T
+
+        # Let Z = L.T @ G_Sigma @ L
+        Z = L.T @ (G_Sigma @ L)
+
+        # Delta_Sigma = 2 * L @ Z @ L.T
+
+        # We need to map Delta_Sigma back to Delta_L
+        # Delta_L = Delta_Sigma @ L^{-T} * 0.5
+        # Delta_L = (2 * L @ Z @ L.T) @ L^{-T} * 0.5
+        # Delta_L = L @ Z
+
+        nat_g_L = L @ Z
+
+        # Enforce lower triangularity on the update
+        nat_g_L = jnp.tril(nat_g_L)
+
+        # 4. Pushforward: Map nat_g_L -> nat_g_raw
+        # This handles the 1/sigmoid scaling automatically and safely
+        _, d_raw = jax.jvp(inv, (L,), (nat_g_L,))
+        nat_g_raw = d_raw
+
+        # Combine
+        updates = {"mean": nat_g_m, "raw_tril": nat_g_raw}
+
+        return updates, state
+
+    return optax.GradientTransformation(init_fn, update_fn)
+
+
 # ---------- Pure helper functions (no class state) ----------
+
 
 def make_spd(A, jitter_init: float = 1e-8, max_tries: int = 8) -> np.ndarray:
     """
