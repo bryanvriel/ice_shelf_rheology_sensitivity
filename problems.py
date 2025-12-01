@@ -249,8 +249,18 @@ class IceShelfProblem:
 
     def init_normalizers(self, B_norm, n_norm, cfg):
         params = {
-            "B": {"low": cfg.model.B_min, "high": cfg.model.B_max, "C0": 1.0},
-            "n": {"low": cfg.model.n_min, "high": cfg.model.n_max, "C0": 3.0},
+            "B": {
+                "low": cfg.model.B_min,
+                "high": cfg.model.B_max,
+                "tau": cfg.inverse.norm_scale,
+                "C0": 1.0
+            },
+            "n": {
+                "low": cfg.model.n_min,
+                "high": cfg.model.n_max,
+                "tau": cfg.inverse.norm_scale,
+                "C0": 3.0
+            },
         }
 
         # Create inverse normalizers
@@ -266,8 +276,18 @@ class IceShelfProblem:
                 inv = partial(models.inv_norm_arctan, low=p["low"], high=p["high"])
                 fwd = partial(models.fwd_norm_arctan, low=p["low"], high=p["high"])
             elif norm_type == "cdf":
-                inv = partial(models.inv_norm_cdf, low=p["low"], high=p["high"])
-                fwd = partial(models.fwd_norm_cdf, low=p["low"], high=p["high"])
+                inv = partial(
+                    models.inv_norm_cdf,
+                    low=p["low"],
+                    high=p["high"],
+                    tau=p["tau"],
+                )
+                fwd = partial(
+                    models.fwd_norm_cdf,
+                    low=p["low"],
+                    high=p["high"],
+                    tau=p["tau"],
+                )
             else:
                 raise ValueError("Unsupported norm type.")
 
