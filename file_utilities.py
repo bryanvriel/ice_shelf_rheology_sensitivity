@@ -1,4 +1,4 @@
-#-*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 import numpy as np
 import jax.numpy as jnp
@@ -140,7 +140,9 @@ def save_raster(data, x_coords, y_coords, filename, mid=False):
 
     # Create transform
     if mid:
-        transform = from_origin(x_coords[0] - xres / 2, y_coords[0] + yres / 2, xres, yres)
+        transform = from_origin(
+            x_coords[0] - xres / 2, y_coords[0] + yres / 2, xres, yres
+        )
     else:
         transform = from_origin(x_coords[0], y_coords[0], xres, yres)
 
@@ -202,7 +204,9 @@ def write_results_to_file(filename, preds, group=None, mode="a", extra_data={}):
         # group["n"] = preds["n"]
 
 
-def save_state_to_group(optimizer_state, opt_type, filepath: str, group_name: str):
+def save_state_to_group(
+    optimizer_state, opt_type, filepath: str, group_name: str, verbose=True
+):
     """Saves the optimizer state to a specific group in an HDF5 file."""
     # Use 'a' mode to create file if it doesn't exist or open for appending
     with h5py.File(filepath, "a") as f:
@@ -224,10 +228,12 @@ def save_state_to_group(optimizer_state, opt_type, filepath: str, group_name: st
 
         # Use tree_map_with_path to apply the saving function to each leaf
         jax.tree_util.tree_map_with_path(save_leaf, optimizer_state)
-    print(f"✅ Optimizer state saved to group '{group_name}' in {filepath}")
+
+    if verbose:
+        print(f"✅ Optimizer state saved to group '{group_name}' in {filepath}")
 
 
-def load_state_from_group(template_state, filepath: str, group_name: str):
+def load_state_from_group(template_state, filepath: str, group_name: str, verbose=True):
     """Loads the optimizer state from a specific group in an HDF5 file."""
     with h5py.File(filepath, "r") as f:
         if group_name not in f:
@@ -248,7 +254,9 @@ def load_state_from_group(template_state, filepath: str, group_name: str):
 
         # Use tree_map_with_path to reconstruct the state from the group
         loaded_state = jax.tree_util.tree_map_with_path(load_leaf, template_state)
-    print(f"✅ Optimizer state loaded from group '{group_name}' in {filepath}")
+
+    if verbose:
+        print(f"✅ Optimizer state loaded from group '{group_name}' in {filepath}")
     return loaded_state, opt_type
 
 
@@ -280,14 +288,17 @@ def print_file_last_modified(filepath):
     except Exception as e:
         print(f"An error occurred: {e}")
 
+
 # -------------------------
 # Core utilities for filename creation and parsing
 # -------------------------
+
 
 def _canonicalize(obj: Any) -> Any:
     """Recursively convert obj to a JSON-serializable, sorted, stable form."""
     try:
         import numpy as np
+
         np_types = (np.generic, np.ndarray)
     except Exception:
         np_types = tuple()
@@ -308,6 +319,7 @@ def _canonicalize(obj: Any) -> Any:
         # Fallback: stable repr
         return repr(obj)
 
+
 def _short_hash(payload: Dict[str, Any], digest_bytes: int = 8) -> str:
     """Stable short hash (hex) of a payload."""
     canon = _canonicalize(payload)
@@ -321,7 +333,7 @@ def _is_simple_scalar(v: Any) -> bool:
 
 def _fmt_simple(v: Any) -> str:
     if isinstance(v, float):
-        return f"{v:.6g}"            # compact but precise enough
+        return f"{v:.6g}"  # compact but precise enough
     if isinstance(v, bool):
         return "t" if v else "f"
     if v is None:
@@ -336,9 +348,44 @@ def _sanitize_filename(s: str) -> str:
     s = re.sub(r"-{2,}", "-", s).strip("-")
     return s
 
+
 # -------------------------
 # Public API
 # -------------------------
+
+
+def make_data_digest(
+    cfg: DictToStruct, ignore=["v_sigma", "amp", "loc"],
+) -> str:
+    data_cfg = cfg.data.todict()
+    for key in ignore:
+        del data_cfg[key]
+    digest = _short_hash({"data": data_cfg}, digest_bytes=4)
+    return digest
+
+
+def make_inverse_digest(
+    cfg: DictToStruct, ignore=["n_iter", "lr_schedule", "lr", "objective_scale"],
+) -> str:
+    inverse_cfg = cfg.inverse.todict()
+    for key in ignore:
+        del inverse_cfg[key]
+
+    digest = _short_hash(
+        {"inverse": inverse_cfg, "model": cfg.model.todict()}
+    )
+    return digest
+
+
+def make_geom_digest(cfg: DictToStruct) -> str:
+    digest = _short_hash({"matrix": cfg.matrix.todict()}, digest_bytes=4)
+    return digest
+
+
+def make_matrix_filename(cfg: DictToStruct) -> str:
+    outdir = cfg.output_dir
+    digest = make_geom_digest(cfg)
+    return os.path.join(outdir, f"matrix_data_{digest}.h5")
 
 
 def make_results_filename(
@@ -347,7 +394,6 @@ def make_results_filename(
     prefix: str = "r",
     ext: str = "h5",
     max_slug_chars: int = 140,
-    ignore = ["n_iter", "lr_schedule", "lr", "objective_scale"],
 ) -> str:
     """
     Create a unique, human-readable results filename from {data,inverse} configs.
@@ -359,14 +405,12 @@ def make_results_filename(
     inverse_cfg = cfg.inverse.todict()
     outdir = cfg.output_dir
 
-    # Delete non-parameter fields from inverse section
-    for key in ignore:
-        del inverse_cfg[key]
-
     # Build human-readable tokens from simple top-level scalars (sorted by key)
     items = {
         "d": ["u_sigma", "amp", "loc"],
-        "inv": ["B_norm_type",],
+        "inv": [
+            "B_norm_type",
+        ],
     }
     tokens = []
     for sect_tag, _cfg in (("d", data_cfg), ("inv", inverse_cfg)):
@@ -384,16 +428,21 @@ def make_results_filename(
     if len(slug) > max_slug_chars:
         slug = slug[:max_slug_chars].rstrip("_-")
 
-    # Stable short hash over the full canonicalized configs
-    digest = _short_hash({"data": data_cfg, "inverse": inverse_cfg})
+    # Stable short hashes over the full canonicalized configs
+    data_digest = make_data_digest(cfg)
+    geom_digest = make_geom_digest(cfg)
+    inv_digest = make_inverse_digest(cfg)
 
     # Assemble + sanitize
     pieces = [prefix]
     if slug:
         pieces.append(slug)
-    pieces.append(digest)
+    pieces.append(data_digest)
+    pieces.append(geom_digest)
+    pieces.append(inv_digest)
     base = "__".join(pieces)
     fname = _sanitize_filename(base) + f".{ext.lstrip('.')}"
     return os.path.join(outdir, fname)
+
 
 # end of file
