@@ -383,9 +383,12 @@ def make_geom_digest(cfg: DictToStruct) -> str:
 
 
 def make_matrix_filename(cfg: DictToStruct) -> str:
-    outdir = cfg.output_dir
-    digest = make_geom_digest(cfg)
-    return os.path.join(outdir, f"matrix_data_{digest}.h5")
+    if cfg.matrix.use_ref:
+        return "ref_data/matrix_data.h5"
+    else:
+        outdir = cfg.output_dir
+        digest = make_geom_digest(cfg)
+        return os.path.join(outdir, f"matrix_data_{digest}.h5")
 
 
 def make_results_filename(
