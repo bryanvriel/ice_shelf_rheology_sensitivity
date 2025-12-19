@@ -85,12 +85,15 @@ def generate_filename(cfg, loc, amp):
 
 def data_filename(cfg, args):
     outdir = cfg.output_dir
-    loc = f"{args.loc}"
-    amp = f"amp-{args.amp}"
-    return os.path.join(
-        outdir,
-        f"data_inverse_perturbed_{loc}_{amp}.h5",
-    )
+    if args is None:
+        return os.path.join(outdir, "data_inverse.h5")
+    else:
+        loc = f"{args.loc}"
+        amp = f"amp-{args.amp}"
+        return os.path.join(
+            outdir,
+            f"data_inverse_perturbed_{loc}_{amp}.h5",
+        )
 
 
 def read_raster(filepath):
