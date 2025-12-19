@@ -69,7 +69,7 @@ class SingleFieldMatrix(eqx.Module):
     matrix_data: dict
 
     def __init__(
-        self, matfile: str | dict, field_name: str, penalties: list, precondition: bool
+        self, matfile: str | dict, field_name: str, penalty: float, precondition: bool
     ):
         """
         Initializes the matrix and associated data for a single field.
@@ -77,7 +77,7 @@ class SingleFieldMatrix(eqx.Module):
         Args:
             matfile (str): The name of the file for the matrix data.
             field_name (str): The name of the field (e.g., 'B' or 'n').
-            penalties (list): List of penalty parameters for regularization.
+            penalty (float): Penalty parameter for regularization.
             precondition (bool): Whether to apply preconditioning.
         """
         # Load data from HDF5 into NumPy arrays or copy dict
@@ -99,7 +99,7 @@ class SingleFieldMatrix(eqx.Module):
 
         # Build regularization matrix (prior precision)
         S_np = cryogen.build_regularization_matrix_dict(
-            penalties, matrix_data,
+            penalty, matrix_data,
         )
 
         # Apply preconditioning if requested
