@@ -267,27 +267,20 @@ class IceShelfProblem:
         def create_fn(norm_type, key):
             p = params[key]
             if norm_type == "log":
-                inv = partial(models.inv_norm_log, C0=p["C0"])
-                fwd = partial(models.fwd_norm_log, C0=p["C0"])
+                inv = partial(models.inv_norm_log, **p)
+                fwd = partial(models.fwd_norm_log, **p)
             elif norm_type == "tanh":
-                inv = partial(models.inv_norm_tanh, low=p["low"], high=p["high"])
-                fwd = partial(models.fwd_norm_tanh, low=p["low"], high=p["high"])
+                inv = partial(models.inv_norm_tanh, **p)
+                fwd = partial(models.fwd_norm_tanh, **p)
             elif norm_type == "arctan":
-                inv = partial(models.inv_norm_arctan, low=p["low"], high=p["high"])
-                fwd = partial(models.fwd_norm_arctan, low=p["low"], high=p["high"])
+                inv = partial(models.inv_norm_arctan, **p)
+                fwd = partial(models.fwd_norm_arctan, **p)
             elif norm_type == "cdf":
-                inv = partial(
-                    models.inv_norm_cdf,
-                    low=p["low"],
-                    high=p["high"],
-                    tau=p["tau"],
-                )
-                fwd = partial(
-                    models.fwd_norm_cdf,
-                    low=p["low"],
-                    high=p["high"],
-                    tau=p["tau"],
-                )
+                inv = partial(models.inv_norm_cdf, **p)
+                fwd = partial(models.fwd_norm_cdf, **p)
+            elif norm_type == "sp":
+                inv = partial(models.inv_norm_softplus, **p)
+                fwd = partial(models.fwd_norm_softplus, **p)
             else:
                 raise ValueError("Unsupported norm type.")
 
