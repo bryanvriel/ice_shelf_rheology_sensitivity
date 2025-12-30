@@ -16,7 +16,7 @@ from mpi4py import MPI
 
 import schurflow.train_utilities as tu
 import schurflow.file_utilities as fu
-from schurflow.hvi import SVIFullRankGaussian, natural_gradient_transform
+from schurflow.hvi import SVIFullRankGaussianCorrelated, natural_gradient_transform
 
 import cryogen
 import jbao
@@ -34,6 +34,13 @@ def parse():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
+        "-n_iter",
+        action="store",
+        type=int,
+        default=10000,
+        help="Number of iterations. Default: 10000.",
+    )
+    parser.add_argument(
         '--opt',
         action="store",
         type=str,
@@ -43,7 +50,7 @@ def parse():
     return parser.parse_known_args()
 
 
-def main(args, extra_args):
+def main(cfg, args):
 
     # Number of ensemble members is set to the number of MPI processes
     # We force each ensemble member to only use 1 MPI process
@@ -52,27 +59,19 @@ def main(args, extra_args):
     n_proc = ensemble.ensemble_comm.size
     rank = ensemble.ensemble_comm.rank
 
-    lr = 5e-4
-    num_iter = 10000
-
-    #num_mc_samples = n_proc
-    num_mc_samples = 18
-
-    beta_kl = 1.0
-
     def mpi_print(*msg):
         if rank == 0:
             print(*msg)
         sys.stdout.flush()
         comm.Barrier()
 
-    # Load configuration
-    extra_args.extend(["--data.amp", args.amp])
-    extra_args.extend(["--data.loc", args.loc])
-    cfg = jbao.utils.parse_toml(args.cfg, default="default_config.toml")
-    cfg = jbao.utils.update_cfg_with_extra(cfg, extra_args)
     outdir = cfg.output_dir
     data_file = fu.data_filename(cfg, args)
+
+    if cfg.vi.num_mc == 0:
+        num_mc_samples = n_proc
+    else:
+        num_mc_samples = cfg.vi.num_mc
 
     # Create objects
     # We set data_obj=True to create a data-only objective
@@ -88,15 +87,25 @@ def main(args, extra_args):
             grad_nll = np.full((field.N,), np.nan, dtype=np.float64)
         return -nll, -grad_nll
 
-    # Create SVI model
-    hyper = {'B': (1.0, 0.5), 'n': (2.5, 0.8)} # see test_hvi.ipynb for visualization
-    svi_model = SVIFullRankGaussian(
-        compute_log_likelihood,
+    # Hyperprior configuration
+    hyperprior_config = {
+        'σ_B_min': cfg.vi.sigma_B_min,
+        'σ_n_min': cfg.vi.sigma_n_min,
+        'σ_B_default': cfg.vi.sigma_B_default,
+        'σ_n_default': cfg.vi.sigma_n_default,
+        'ρ_default': cfg.vi.rho_default,
+        'λ_σ': cfg.vi.lambda_sigma,
+        'λ_ρ': cfg.vi.lambda_rho,
+    }
+
+    # Create HVI model
+    svi_model = SVIFullRankGaussianCorrelated(
+        loglik_fn=compute_log_likelihood,
         num_params_B=field.N_B,
-        prior_var_hyperpriors=hyper,
+        hyperprior_config=hyperprior_config,
         num_mc=num_mc_samples,
         antithetic=True,
-        beta_kl=beta_kl,
+        dtype=jnp.float64,
         comm=comm,
     )
 
@@ -113,15 +122,14 @@ def main(args, extra_args):
         H = group["hessian"][()]
 
     # NOTE:REGULARIZATION can be important
-    H_reg = H + 0.5 * np.eye(z_map.size)
+    H_reg = H + cfg.vi.hess_reg * np.eye(z_map.size)
 
-    # Initial variances from penalty parameters
-    init_log_var_B = np.log(1.0 / cfg.inverse.penalty_B)
-    init_log_var_n = np.log(1.0 / cfg.inverse.penalty_n)
+    # Initial hyper parameters from config
+    init_σ_B, init_σ_n, init_ρ = cfg.inverse.hyper_params
 
     # Initialize
     params = svi_model.init_from_map_hessian(
-        z_map, H_reg, (init_log_var_B, init_log_var_n),
+        z_map, H_reg, init_σ_B=init_σ_B, init_σ_n=init_σ_n, init_ρ=init_ρ,
     )
 
     # If restoring, overwrite parameters
@@ -139,8 +147,9 @@ def main(args, extra_args):
     param_labels = {
         "mean": "variational",
         "raw_tril": "variational",
-        "log_prior_var_B": "hyper_B",
-        "log_prior_var_n": "hyper_n",
+        "log_σ_B_shifted": "hyper",
+        "log_σ_n_shifted": "hyper",
+        "raw_ρ": "hyper",
     }
 
     # Create the optimizer
@@ -150,10 +159,9 @@ def main(args, extra_args):
                 "variational": optax.chain(
                     natural_gradient_transform(svi_model.bij, damping=1e-4),
                     optax.clip_by_global_norm(5.0),
-                    optax.scale_by_learning_rate(8e-4),
+                    optax.scale_by_learning_rate(cfg.vi.lr),
                 ),
-                "hyper_B": optax.adam(learning_rate=2e-4),
-                "hyper_n": optax.adam(learning_rate=2e-4),
+                "hyper": optax.adam(learning_rate=cfg.vi.lr_hyper),
             },
             param_labels=param_labels,
         )
@@ -170,7 +178,7 @@ def main(args, extra_args):
 
     # Run the optimization loop 
     def callback(t, hist, params, opt_state, key):
-        logP, kl, var_B, var_n = [hist[:, j] for j in range(4)]
+        logP, kl, σ_B, σ_n, ρ = [hist[:, j] for j in range(5)]
         elbo = logP[-1] - kl[-1]
         if t % 10 == 0:
             print(
@@ -178,8 +186,9 @@ def main(args, extra_args):
                 f'{elbo:13.6f} | '
                 f'{logP[-1]:13.6f} | '
                 f'{kl[-1]:13.6f} | '
-                f'{var_B[-1]:6.3f} | '
-                f'{var_n[-1]:6.3f}'
+                f'{σ_B[-1]:5.2f} | '
+                f'{σ_n[-1]:5.2f} | '
+                f'{ρ[-1]:4.2f}'
             )
         extra = {"hist": hist, "opt_state": opt_state, "key": key}
         save_params(paramfile, params, extra=extra)
@@ -189,7 +198,7 @@ def main(args, extra_args):
         optimizer,
         opt_state,
         loop_key,
-        num_steps=num_iter,
+        num_steps=args.n_iter,
         jit=False,
         callback=callback,
     )
