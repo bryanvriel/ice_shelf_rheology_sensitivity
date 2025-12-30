@@ -466,7 +466,7 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
         assert z is None and θ_np is not None
         z = θ_np
 
-    objective.update_controls(θ_np)
+    objective.controls = θ_np
     if problem.fixed_exponent:
         θ_B = objective.controls
         θ_n = problem.θ_n
