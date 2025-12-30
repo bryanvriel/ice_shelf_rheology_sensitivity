@@ -312,8 +312,8 @@ class SVIFullRankGaussianCorrelated:
         The prior has block structure: for each wavelet index k,
         [theta_B[k], theta_n[k]]^T ~ N(0, Σ_block)
 
-        where Σ_block = [[σ_B^2,            ρ*σ_B*σ_n],
-                             [ρ*σ_B*σ_n,  σ_n^2          ]]
+        where Σ_block = [[σ_B^2,     ρ*σ_B*σ_n],
+                         [ρ*σ_B*σ_n, σ_n^2]]
 
         This exploits the Kronecker structure for efficiency.
         """
@@ -516,7 +516,7 @@ class SVIFullRankGaussianCorrelated:
         valid_mask = np.isfinite(self.logP)
         num_valid_mc = np.sum(valid_mask)
         if num_valid_mc == 0:
-            return 1e12, jax.tree_map(jnp.zeros_like, params), {}
+            return 1e12, jax.tree_util.tree_map(jnp.zeros_like, params), {}
 
         logP = jnp.mean(self.logP[valid_mask])
         grad_logP_vals = self.grad_logP.reshape(-1, self.n_dim)[valid_mask]
@@ -540,7 +540,6 @@ class SVIFullRankGaussianCorrelated:
 
         # 7. Combine
         loss = -1 * (logP - kl_val)
-
         grad_loss = jax.tree_util.tree_map(
             lambda g_kl, g_lik: g_kl - g_lik, grad_kl_params, grad_logP_params
         )
@@ -568,11 +567,9 @@ class SVIFullRankGaussianCorrelated:
         callback: Optional[Callable] = None,
     ) -> Tuple[Params, optax.OptState, Dict[str, Array]]:
 
-        step_jit = None
         if jit:
-
             @jax.jit
-            def _step_internal(pr, ost, r):
+            def step(pr, ost, r):
                 r, sub = random.split(r)
                 v_g = value_and_grad(self.elbo_loss_vmap, has_aux=True)
                 (loss, metrics), grads = v_g(pr, sub)
@@ -580,24 +577,21 @@ class SVIFullRankGaussianCorrelated:
                 pr = optax.apply_updates(pr, updates)
                 return pr, ost, r, loss, metrics
 
-            step_jit = _step_internal
+        else:
+            def step(pr, ost, r):
+                rng, sub = random.split(r)
+                loss, grads, metrics = self.elbo_loss_mpi(pr, sub)
+                if self.mpi_rank == 0:
+                    updates, opt_state = tx.update(grads, ost, pr)
+                    pr = optax.apply_updates(pr, updates)
+                pr = self.comm.bcast(pr, root=0)
+                return pr, ost, rng, loss, metrics
 
         # History now includes 5 columns: logP, kl, σ_B, σ_n, ρ
         hist = np.zeros((num_steps, 5))
 
         for t in range(num_steps):
-            if jit:
-                params, opt_state, rng, loss, metrics = step_jit(params, opt_state, rng)
-            else:
-                rng, sub = random.split(rng)
-                loss, grads, metrics = self.elbo_loss_mpi(params, sub)
-
-                if self.mpi_rank == 0:
-                    updates, opt_state = tx.update(grads, opt_state, params)
-                    params = optax.apply_updates(params, updates)
-
-                if self.comm is not None:
-                    params = self.comm.bcast(params, root=0)
+            params, opt_state, rng, loss, metrics = step(params, opt_state, rng)
 
             if self.mpi_rank == 0:
                 if callback or (t == num_steps - 1):
