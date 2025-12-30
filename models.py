@@ -58,10 +58,10 @@ def terminus_perturbation(**kwargs):
     return (τ_I - τ_W) * inner(u, ν)
 
 
-def inv_norm_tanh(θ, low=0.1, high=5.0):
+def inv_norm_tanh(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
     A = 0.5 * (high - low)
     C0 = 0.5 * (high + low)
-    return A * firedrake.tanh(θ) + C0
+    return A * firedrake.tanh(θ / tau) + C0
 
 
 def _arctanh(x):
@@ -70,25 +70,25 @@ def _arctanh(x):
     return 0.5 * firedrake.ln((1.0 + x_clip) / (1.0 - x_clip))
 
 
-def fwd_norm_tanh(θ, low=0.1, high=5.0):
+def fwd_norm_tanh(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
     A = 0.5 * (high - low)
     C0 = 0.5 * (high + low)
-    return _arctanh((θ - C0) / A)
+    return tau * _arctanh((θ - C0) / A)
 
 
-def inv_norm_arctan(θ, low=0.1, high=5.0, tau=1.0):
+def inv_norm_arctan(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
     m = 0.5 * (low + high)
     r = 0.5 * (high - low)
     s = 2 / np.pi * r
     return m + s * firedrake.atan(θ / tau)
 
 
-def inv_norm_cdf(θ, low=0.1, high=5.0, tau=1.0):
+def inv_norm_cdf(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
     u = 0.5 * (1.0 + firedrake.erf(θ / (tau * firedrake.sqrt(2.0))))
     return low + (high - low) * u
 
 
-def fwd_norm_cdf(x, low=0.1, high=5.0, tau=1.0):
+def fwd_norm_cdf(x, low=0.1, high=5.0, tau=1.0, **kwargs):
     out = firedrake.Function(x.function_space())
     x_arr = x.dat.data_ro
     u = (x.dat.data_ro - low) / (high - low)
@@ -97,15 +97,41 @@ def fwd_norm_cdf(x, low=0.1, high=5.0, tau=1.0):
     return out
 
 
-def inv_norm_log(θ, C0=1.0):
+def inv_norm_log(θ, C0=1.0, **kwargs):
     return C0 * firedrake.exp(θ)
 
 
-def fwd_norm_log(x, C0=1.0):
+def fwd_norm_log(x, C0=1.0, **kwargs):
     return firedrake.ln(x) - firedrake.ln(C0)
 
 
-def fwd_norm_arctan(θ, low=0.1, high=5.0, tau=1.0):
+def inv_norm_softplus(θ, low=0.1, high=5.0, tau=2, **kwargs):
+    loc = 0.5 * (high + low)
+    scale = (high - low) / (2 * tau)
+
+    delta = firedrake.ln(firedrake.exp(loc) - 1.0)
+    slope = 1 - firedrake.exp(-loc)
+    latent_scale = scale / slope
+
+    return firedrake.ln(1 + firedrake.exp(latent_scale * θ + delta))
+
+
+def fwd_norm_softplus(x, low=0.1, high=5.0, tau=2, **kwargs):
+    loc = 0.5 * (high + low)
+    scale = (high - low) / (2 * tau)
+
+    delta = firedrake.ln(firedrake.exp(loc) - 1.0)
+    slope = 1 - firedrake.exp(-loc)
+    latent_scale = scale / slope
+
+    out = firedrake.Function(x.function_space())
+    x_arr = np.maximum(x.dat.data_ro, 1e-10)
+    theta = np.log(np.expm1(x_arr)) - delta
+    out.dat.data[:] = theta / latent_scale
+    return out
+
+
+def fwd_norm_arctan(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
     L = low
     U = high
     m = 0.5 * (L + U)
@@ -172,6 +198,19 @@ def rigidity_with_exponent(**kwargs):
     return 2 * n / (n + 1) * h * B * ε_e ** (1 / n + 1)
 
 
+def log_viscosity(**kwargs):
+    u = kwargs["velocity"]
+    h = kwargs["thickness"]
+    log_eta = kwargs["log_viscosity"]
+    eta = firedrake.exp(log_eta)
+    ε_min = firedrake.Constant(strain_rate_min)
+
+    ε = sym_grad(u)
+    ε_e_sq = inner(ε, ε) + trace(ε) ** 2 + ε_min**2
+
+    return h * eta * ε_e_sq
+
+
 def effective_strain_rate(ε, ε_min):
     return sqrt((inner(ε, ε) + trace(ε) ** 2 + ε_min**2) / 2)
 
@@ -222,7 +261,11 @@ def _petsc_opts(dirichlet_ids, side_wall_ids, **_):
         "side_wall_ids": side_wall_ids,
         "diagnostic_solver_type": "petsc",
         "diagnostic_solver_parameters": {
-            "snes_linesearch_type": "cp",
+            "snes_linesearch_type": "newtonls",
+            "snes_linesearch_type": "nleqerr",
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
             "snes_max_it": 200,
         },
     }
