@@ -50,7 +50,6 @@ def main(cfg, args):
     else:
         rng = np.random.default_rng(cfg.inverse.opt_init_seed)
         z = cfg.inverse.opt_init_amp * rng.standard_normal((field.N,))
-        # z = np.zeros(field.N)
     print("Number of parameters:", z.size)
 
     # Create optimizer
@@ -123,7 +122,7 @@ def main(cfg, args):
             factr=0.001,
             maxcor=10,
             method="L-BFGS-B",
-            maxiter=1000,
+            maxiter=2000,
         )
 
     else:
