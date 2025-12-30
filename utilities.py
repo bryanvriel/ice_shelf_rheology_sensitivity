@@ -31,15 +31,14 @@ def coordinate_values(Q):
 
 class NumpyConverter:
 
-    def __init__(self, shelf_file=None):
+    def __init__(self, coord_file="aux/coordinate_data.h5", shelf_file=None):
 
         # Load coordinate array
-        with h5py.File('aux/coordinate_data.h5', 'r') as fid:
-            self.X = fid['X'][()]
-            self.Y = fid['Y'][()]
+        with h5py.File(coord_file, 'r') as fid:
+            self.xarr = fid['x'][()]
+            self.yarr = fid['y'][()]
+            self.X, self.Y = np.meshgrid(self.xarr, self.yarr)
             Ny, Nx = self.X.shape
-            self.xarr = self.X[0, :]
-            self.yarr = self.Y[:, 0]
 
         # Load shelf coordinates
         if shelf_file is None:
