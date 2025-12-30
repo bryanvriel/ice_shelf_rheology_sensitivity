@@ -27,14 +27,13 @@ import rasterio
 from . import models
 from .problems import make_mesh, IceShelfProblem
 from .objectives import PosteriorObjective, DataObjective
-from .fields import SingleFieldMatrix, RheologyFieldMatrix
+from .fields import create_rheology_field
 from .utilities import NumpyConverter
-from .file_utilities import make_matrix_filename
+
 
 # ---------------------------------------------------------------------------
 # Factories
 # ---------------------------------------------------------------------------
-
 
 def initialize_objects(
     cfg,
@@ -49,27 +48,13 @@ def initialize_objects(
     outdir = cfg.output_dir
 
     # Create rheology field
-    if cfg.matrix.spectral:
-        matfile = threshold_spectral_matrix(cfg.matrix.spectral_L_min)
-    else:
-        matfile = make_matrix_filename(cfg)
-    precondition = cfg.inverse.precondition
-    if cfg.inverse.joint:
-        field = RheologyFieldMatrix(
-            matfile,
-            [cfg.inverse.penalties_B, cfg.inverse.penalties_n],
-            precondition=precondition,
-        )
-    else:
-        field = SingleFieldMatrix(
-            matfile,
-            "B",
-            cfg.inverse.penalties_B,
-            precondition=precondition,
-        )
+    field = create_rheology_field(cfg, hyper_params=cfg.inverse.hyper_params)
 
     # Initialize a firedrake -> numpy function converter
-    converter = NumpyConverter(shelf_file="aux/coords_rutford_inverse_shelf.txt")
+    converter = NumpyConverter(
+        coord_file=data_file,
+        shelf_file="aux/coords_rutford_inverse_shelf.txt",
+    )
 
     if data_file is None:
         return field, converter
@@ -194,9 +179,10 @@ def print_info():
 
 # Define a class to hold state (iteration count + history)
 class CallbackTracker:
-    def __init__(self):
+    def __init__(self, verbose=True):
         self.nit = 0
         self.losses = []
+        self.verbose = verbose
 
     def __call__(self, intermediate_result):
         # 1. Increment iteration counter
@@ -207,7 +193,7 @@ class CallbackTracker:
         self.losses.append(loss)
 
         # Optional: Print live progress
-        if self.nit % 50 == 0:  # Print every 10 iterations
+        if self.verbose and self.nit % 50 == 0:  # Print every 10 iterations
             print(f"Iter: {self.nit}, Loss: {loss:.5f}")
 
 
@@ -220,6 +206,7 @@ def optimize_bfgs(
     maxcor=10,
     method="BFGS",
     hess_inv0=None,
+    verbose=True,
 ):
 
     if method == "BFGS":
@@ -241,7 +228,7 @@ def optimize_bfgs(
             "gtol": 1e-6,
         }
 
-    tracker = CallbackTracker()
+    tracker = CallbackTracker(verbose=verbose)
 
     # Run optimization
     with Timer(f"Performing optimization with {method}"):
