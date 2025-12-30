@@ -7,8 +7,56 @@ import h5py
 import jax
 import jax.numpy as jnp
 import equinox as eqx
-
 import cryogen
+
+from .file_utilities import make_matrix_filename
+
+# Create a mapping of types to their respective compute/inverse logic
+NORM_MAPPING = {
+    "tanh": (cryogen.compute_tanh_norm_params, cryogen.tanh_inverse),
+    "cdf":  (cryogen.compute_cdf_norm_params, cryogen.cdf_inverse),
+    "sp":   (cryogen.compute_softplus_norm_params, cryogen.softplus_inverse),
+}
+
+
+def inv_norm(θ, opts, norm_type):
+    if norm_type not in NORM_MAPPING:
+        raise ValueError(f"Unsupported norm type: {norm_type}")
+    param_fn, inv_fn = NORM_MAPPING[norm_type]
+    p = param_fn(**opts)
+    return np.array(inv_fn(θ, p))
+
+
+def make_spd(
+    A: np.ndarray,
+    jitter_init: float = 1e-8,
+    max_tries: int = 8,
+) -> np.ndarray:
+    """
+    Ensure matrix is symmetric positive definite via jittering.
+
+    Args:
+        A: Input matrix.
+        jitter_init: Initial jitter to add to diagonal.
+        max_tries: Maximum number of jitter increases to attempt.
+
+    Returns:
+        SPD matrix.
+    """
+    M = np.asarray(A, dtype=float)
+    M = 0.5 * (M + M.T)
+    jitter = jitter_init
+    for _ in range(max_tries + 1):
+        try:
+            np.linalg.cholesky(M)
+            return M
+        except np.linalg.LinAlgError:
+            M = M + jitter * np.eye(M.shape[0])
+            jitter *= 10.0
+    w = np.linalg.eigvalsh(0.5 * (M + M.T))
+    shift = max(0.0, -w[0] + jitter_init)
+    return M + shift * np.eye(M.shape[0])
+
 
 def mvn_nll(z: jnp.ndarray, S: jnp.ndarray) -> float:
     """
@@ -26,6 +74,52 @@ def tikhonov(z: jnp.ndarray, penalty: float) -> float:
     return penalty * jnp.dot(z, z)
 
 tikhonov_and_grad = jax.value_and_grad(tikhonov, argnums=0)
+
+
+def create_rheology_field(cfg, hyper_params=[]):
+
+    if cfg.matrix.spectral:
+        matfile = threshold_spectral_matrix(cfg.matrix.spectral_L_min)
+    else:
+        matfile = make_matrix_filename(cfg)
+
+    # Unpack hyper or compute hyper parameters
+    if not cfg.inverse.joint:
+        field = SingleFieldMatrix(
+            matfile,
+            "B",
+            cfg.inverse.penalty_B,
+            precondition=cfg.inverse.precondition,
+        )
+        return field
+
+    # Unpack hyper parameters
+    if len(hyper_params) == 0:
+        σ_B = np.sqrt(1 / cfg.inverse.penalty_B)
+        σ_n = np.sqrt(1 / cfg.inverse.penalty_n)
+        ρ = 0.0
+    elif len(hyper_params) == 2:
+        σ_B, σ_n = hyper_params
+        ρ = 0.0
+    elif len(hyper_params) == 3:
+        σ_B, σ_n, ρ = hyper_params
+    else:
+        raise ValueError('hyper_params can only have 0, 2, or 3 elements.')
+
+    # Construct prior block covariance matrix
+    Σ = np.array([
+        [σ_B**2, ρ * σ_B * σ_n],
+        [ρ * σ_B * σ_n, σ_n**2],
+    ])
+
+    # Compute precision (inverse of covariance)
+    try:
+        Λ = np.linalg.inv(Σ)
+    except np.linalg.LinAlgError:
+        Λ = np.linalg.inv(Σ + 1e-8 * np.eye(2))
+
+    # Create and return joint field
+    return RheologyFieldLambdaMatrix(matfile, Λ)
 
 
 def precondition_matrix(G, S):
@@ -182,7 +276,7 @@ class RheologyFieldMatrix(eqx.Module):
     N: int = eqx.field(static=True)
 
     matrix_data: dict
-    
+
     def __init__(self, matfile: str | dict, penalties: list, precondition: bool = False):
 
         # Create the specialized modules for each field
@@ -270,7 +364,7 @@ class RheologyFieldMatrix(eqx.Module):
         # Combine the results
         total_nll = p_B + p_n
         return total_nll
-    
+
     @eqx.filter_jit
     def prior_nll_and_grad(self, z: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
         """
@@ -295,5 +389,101 @@ class RheologyFieldMatrix(eqx.Module):
             self.field_B.prior_precision(), self.field_n.prior_precision()
         )
 
+
+class RheologyFieldLambdaMatrix(eqx.Module):
+    """
+    A class to handle rheology matrices by composing two SingleFieldMatrix modules.
+    This version delegates field-specific logic to its children, avoiding
+    code repetition.
+
+    Attributes:
+        field_B (SingleFieldMatrix): The module for the 'B' field.
+        field_n (SingleFieldMatrix): The module for the 'n' field.
+        N_B (int): Number of columns for 'B' field.
+        N_n (int): Number of columns for 'n' field.
+        N (int): Total number of parameters.
+        M (int): Total number of points in the field.
+    """
+
+    G_B: jnp.ndarray
+    G_n: jnp.ndarray
+
+    N_B: int = eqx.field(static=True)
+    N_n: int = eqx.field(static=True)
+    M: int = eqx.field(static=True)
+    N: int = eqx.field(static=True)
+
+    matrix_data: dict
+    S: jnp.ndarray
+
+    def __init__(self, matfile: str | dict, Lambda: jnp.ndarray):
+
+        with h5py.File(matfile, "r") as fid:
+            self.G_B = fid['B/G'][()]
+            self.G_n = fid['n/G'][()]
+
+        self.N_B = self.G_B.shape[1]
+        self.N_n = self.G_n.shape[1]
+        self.M = self.G_B.shape[0]
+        self.N = self.N_B + self.N_n
+
+        # Combined matrix_data
+        self.matrix_data = {
+            "B": {"G": self.G_B},
+            "n": {"G": self.G_n},
+        }
+
+        # Build precision matrix
+        self.S = cryogen.build_lambda_precision(Lambda, self.N_B)
+
+    @eqx.filter_jit
+    def __call__(self, z: jnp.ndarray) -> jnp.ndarray:
+        """
+        Performs the combined forward matrix-vector product.
+        z -> [θ_B, θ_n]
+        """
+        # Split the input vector
+        z_B = z[: self.N_B]
+        z_n = z[self.N_B :]
+        return jnp.hstack((self.G_B @ z_B, self.G_n @ z_n))
+
+    @eqx.filter_jit
+    def jvp(self, z_field: jnp.ndarray, v_field: jnp.ndarray) -> jnp.ndarray:
+        """
+        Computes the Jacobian-vector product (J @ v) for this field.
+        """
+        # eqx.jvp returns the primal output and the tangent. We only need the tangent.
+        _, tangent_out = eqx.filter_jvp(self, (z_field,), (v_field,))
+        return tangent_out
+
+    @eqx.filter_jit
+    def vjp(self, z_field: jnp.ndarray, v_field: jnp.ndarray) -> jnp.ndarray:
+        """
+        Computes the vector-Jacobian product (v^T @ J) for this field.
+        """
+        # eqx.vjp returns the primal output and the vjp function.
+        _, vjp_fun = eqx.filter_vjp(self, z_field)
+        # The vjp_fun takes a cotangent vector shaped like the output of f.
+        grad_z, = vjp_fun(v_field)
+        return grad_z
+
+    @eqx.filter_jit
+    def prior_nll(
+        self, z_field: jnp.ndarray
+    ) -> tuple[jnp.ndarray]:
+        """Computes the prior NLL for this field."""
+        nll = mvn_nll(z_field, self.S)
+        return nll
+
+    @eqx.filter_jit
+    def prior_nll_and_grad(
+        self, z_field: jnp.ndarray
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Computes the prior NLL and its gradient for this field."""
+        nll, grad = mvn_nll_and_grad(z_field, self.S)
+        return nll, grad
+
+    def prior_precision(self):
+        return self.S
 
 # end of file
