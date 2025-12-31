@@ -487,6 +487,9 @@ class SVIFullRankGaussianCorrelated:
         """
         Compute negative ELBO with MPI parallelism for Firedrake.
         """
+        # Unpack hyperparameters from current parameters
+        σ_B, σ_n, ρ = self.get_hyperparams(params)
+
         # 1. Sample eps on Root and scatter
         if self.mpi_rank == 0:
             eps = self.sample_eps(rng_key, self.num_mc)
@@ -516,7 +519,10 @@ class SVIFullRankGaussianCorrelated:
         valid_mask = np.isfinite(self.logP)
         num_valid_mc = np.sum(valid_mask)
         if num_valid_mc == 0:
-            return 1e12, jax.tree_util.tree_map(jnp.zeros_like, params), {}
+            metrics = dict(
+                elbo=np.nan, logP=np.nan, kl=np.nan, σ_B=σ_B, σ_n=σ_n, ρ=ρ,
+            )
+            return 1e12, jax.tree_util.tree_map(jnp.zeros_like, params), metrics
 
         logP = jnp.mean(self.logP[valid_mask])
         grad_logP_vals = self.grad_logP.reshape(-1, self.n_dim)[valid_mask]
@@ -543,16 +549,10 @@ class SVIFullRankGaussianCorrelated:
         grad_loss = jax.tree_util.tree_map(
             lambda g_kl, g_lik: g_kl - g_lik, grad_kl_params, grad_logP_params
         )
-
-        σ_B, σ_n, ρ = self.get_hyperparams(params)
         metrics = dict(
-            elbo=-loss,
-            logP=logP,
-            kl=kl_val,
-            σ_B=σ_B,
-            σ_n=σ_n,
-            ρ=ρ,
+            elbo=-loss, logP=logP, kl=kl_val, σ_B=σ_B, σ_n=σ_n, ρ=ρ,
         )
+
         return loss, grad_loss, metrics
 
     # ---------- Training ----------
@@ -568,10 +568,11 @@ class SVIFullRankGaussianCorrelated:
     ) -> Tuple[Params, optax.OptState, Dict[str, Array]]:
 
         if jit:
+            v_g = value_and_grad(self.elbo_loss_vmap, has_aux=True)
+
             @jax.jit
             def step(pr, ost, r):
                 r, sub = random.split(r)
-                v_g = value_and_grad(self.elbo_loss_vmap, has_aux=True)
                 (loss, metrics), grads = v_g(pr, sub)
                 updates, ost = tx.update(grads, ost, pr)
                 pr = optax.apply_updates(pr, updates)
@@ -582,8 +583,9 @@ class SVIFullRankGaussianCorrelated:
                 rng, sub = random.split(r)
                 loss, grads, metrics = self.elbo_loss_mpi(pr, sub)
                 if self.mpi_rank == 0:
-                    updates, opt_state = tx.update(grads, ost, pr)
+                    updates, ost = tx.update(grads, ost, pr)
                     pr = optax.apply_updates(pr, updates)
+                ost = self.comm.bcast(ost, root=0) # not necessary, but do it anyway
                 pr = self.comm.bcast(pr, root=0)
                 return pr, ost, rng, loss, metrics
 
