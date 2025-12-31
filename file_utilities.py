@@ -26,15 +26,15 @@ def common_parse() -> argparse.ArgumentParser:
         "--amp",
         action="store",
         type=str,
-        default="mid",
-        help="Amplitude from (low, mid, high). Default: mid.",
+        default="high",
+        help="Amplitude from (low, mid, high). Default: high.",
     )
     parser.add_argument(
         "--loc",
         action="store",
         type=str,
-        default="terminus",
-        help="Perturbation location from (terminus, GL). Default: terminus.",
+        default="GL",
+        help="Perturbation location from (terminus, GL). Default: GL.",
     )
     parser.add_argument(
         "-r",
