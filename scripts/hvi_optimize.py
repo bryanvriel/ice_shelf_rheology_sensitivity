@@ -149,7 +149,7 @@ def main(cfg, args):
         "raw_tril": "variational",
         "log_σ_B_shifted": "hyper",
         "log_σ_n_shifted": "hyper",
-        "raw_ρ": "hyper",
+        "raw_ρ": "hyper_corr",
     }
 
     # Create the optimizer
@@ -162,6 +162,7 @@ def main(cfg, args):
                     optax.scale_by_learning_rate(cfg.vi.lr),
                 ),
                 "hyper": optax.adam(learning_rate=cfg.vi.lr_hyper),
+                "hyper_corr": optax.adam(learning_rate=0.5*cfg.vi.lr_hyper),
             },
             param_labels=param_labels,
         )
