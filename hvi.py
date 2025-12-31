@@ -650,78 +650,50 @@ def natural_gradient_transform(
     damping: float = 1e-5,
 ) -> optax.GradientTransformation:
     """
-    AD-based Natural Gradient for Block-Diagonal Covariance + Scalar Hyperpriors.
-
-    Applies Fisher Information Matrix scaling to the Gaussian parameters
-    ('mean', 'raw_tril') and Identity scaling to the scalar hyperparameters.
-
-    Updated for the correlated prior with three hyperparameters:
-      - log_σ_B_shifted: log(σ_B - σ_B_min)
-      - log_σ_n_shifted: log(σ_n - σ_n_min)
-      - raw_ρ: arctanh(ρ)
+    Natural Gradient for Full-Rank Gaussian VI with scalar hyperparameters.
     """
 
     def init_fn(params):
         return optax.EmptyState()
 
     def update_fn(grads, state, params):
-        # --- 1. Natural Gradient for Gaussian Variational Parameters ---
-
-        # Setup
+        dtype = params["mean"].dtype
         m = params["mean"]
         raw = params["raw_tril"]
-
-        # Forward pass through bijector
         L = bijector.forward(raw)
+        n = L.shape[0]
 
-        # A. Mean Update: nat_grad_mu = (Σ + damping*I) @ grad_mu
-        # Efficient computation: L @ (L.T @ g_m)
+        # --- Mean Update ---
         g_m = grads["mean"]
         Lt_gm = L.T @ g_m
         nat_g_m = L @ Lt_gm + damping * g_m
 
-        # B. Covariance Update
-        # Pullback: Map gradient from raw-space to L-space
+        # --- Covariance Update ---
         inv = lambda L_: bijector.inverse(L_)
         _, pullback_inv = jax.vjp(inv, L)
         g_raw = grads["raw_tril"]
         (g_L,) = pullback_inv(g_raw)
-
-        # Project gradients to lower triangle
         g_L = jnp.tril(g_L)
 
-        # Convert g_L -> Natural Gradient in Σ space
-        # Y^T = inv(L)^T @ g_L^T = solve(L.T, g_L.T)
-        Yt = solve_triangular(L.T, g_L.T, lower=False)
+        # Regularized solve for numerical stability
+        L_damped = L + damping * jnp.eye(n, dtype=dtype)
+        Yt = solve_triangular(L_damped.T, g_L.T, lower=False)
         Y = Yt.T
 
-        # Symmetrize the gradient in Σ space
         G_Σ = 0.5 * (Y + Y.T)
-
-        # Natural Gradient Step in Σ space:
-        # Delta_Σ = 2 * Σ @ G_Σ @ Σ
-        # Delta_L = L @ Z where Z = L.T @ G_Σ @ L
         Z = L.T @ (G_Σ @ L)
         nat_g_L = L @ Z
+        nat_g_L = jnp.tril(nat_g_L) + damping * g_L  # Add damping
 
-        # Enforce lower triangularity
-        nat_g_L = jnp.tril(nat_g_L)
-
-        # Pushforward: Map nat_g_L -> nat_g_raw
         _, d_raw = jax.jvp(inv, (L,), (nat_g_L,))
         nat_g_raw = d_raw
 
-        # --- 2. Identity Update for Hyperparameters ---
+        # --- Hyperparameters (identity) ---
+        zero = jnp.array(0.0, dtype=dtype)
+        nat_g_log_σ_B = grads.get("log_σ_B_shifted", zero)
+        nat_g_log_σ_n = grads.get("log_σ_n_shifted", zero)
+        nat_g_raw_ρ = grads.get("raw_ρ", zero)
 
-        # Pass gradients through for all three hyperparameters.
-        # The downstream optimizer (e.g., Adam) will handle step sizes.
-        # Using .get() allows flexibility if parameters are frozen.
-
-        nat_g_log_σ_B = grads.get("log_σ_B_shifted", jnp.array(0.0))
-        nat_g_log_σ_n = grads.get("log_σ_n_shifted", jnp.array(0.0))
-        nat_g_raw_ρ = grads.get("raw_ρ", jnp.array(0.0))
-
-        # --- 3. Construct Updates Dictionary ---
         updates = {
             "mean": nat_g_m,
             "raw_tril": nat_g_raw,
