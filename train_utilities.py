@@ -202,6 +202,7 @@ def optimize_bfgs(
     x0,
     maxiter=1000,
     factr=100.0,
+    gtol=1e-6,
     maxls=40,
     maxcor=10,
     method="BFGS",
@@ -214,7 +215,7 @@ def optimize_bfgs(
             "disp": True,
             "maxiter": maxiter,
             "hess_inv0": hess_inv0,
-            "gtol": 1e-6,
+            "gtol": gtol,
             "c2": 0.99,
         }
     elif method == "L-BFGS-B":
@@ -225,7 +226,7 @@ def optimize_bfgs(
             "maxls": maxls,
             "maxcor": maxcor,
             "ftol": factr * np.finfo(np.float64).eps,
-            "gtol": 1e-6,
+            "gtol": gtol,
         }
 
     tracker = CallbackTracker(verbose=verbose)
