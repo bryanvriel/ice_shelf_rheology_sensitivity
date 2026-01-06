@@ -76,7 +76,7 @@ class PosteriorObjective:
 
         return (obj, obj_grad)
 
-    def hessian_vector_product(self, z, v, eps=1e-6):
+    def hvp_finite_diff(self, z, v, eps=1e-6):
         """
         Compute Hessian-vector product H @ v directly in latent parameter space
         using finite differences.
@@ -92,7 +92,10 @@ class PosteriorObjective:
 
         return hvp
 
-    def hvp_grad_diff(self, z, v):
+    def hvp(self, z, v):
+        """
+        Compute Hessian-vector product with adjoints.
+        """
         hvp_data = self.data_objective.hvp(z, v)
         hvp_prior = self.scale * (self.field.S @ v)
         return hvp_data + hvp_prior
@@ -264,6 +267,9 @@ class DataObjective:
             hvp_z += self.field.hvp(z, v, grad_x)
 
         return self.scale * hvp_z
+
+    def hvp_grad_diff(self, z: Vec, v: Vec) -> Vec:
+        return self.hvp(z, v)
 
     @property
     def controls(self):
