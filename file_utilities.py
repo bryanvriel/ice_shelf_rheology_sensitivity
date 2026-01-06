@@ -375,7 +375,11 @@ def make_inverse_digest(
         del inverse_cfg[key]
 
     digest = _short_hash(
-        {"inverse": inverse_cfg, "model": cfg.model.todict()}
+        {
+            "inverse": inverse_cfg,
+            "model": cfg.model.todict(),
+            "matrix": {"mask": cfg.matrix.mask},
+        }
     )
     return digest
 
