@@ -18,6 +18,11 @@ NORM_MAPPING = {
     "sp":   (cryogen.compute_softplus_norm_params, cryogen.softplus_inverse),
 }
 
+FWD_NORM_MAPPING = {
+    "tanh": (cryogen.compute_tanh_norm_params, cryogen.tanh_forward),
+    "cdf":  (cryogen.compute_cdf_norm_params, cryogen.cdf_forward),
+    "sp":   (cryogen.compute_softplus_norm_params, cryogen.softplus_forward),
+}
 
 def inv_norm(θ, opts, norm_type):
     if norm_type not in NORM_MAPPING:
@@ -26,6 +31,12 @@ def inv_norm(θ, opts, norm_type):
     p = param_fn(**opts)
     return np.array(inv_fn(θ, p))
 
+def fwd_norm(θ, opts, norm_type):
+    if norm_type not in FWD_NORM_MAPPING:
+        raise ValueError(f"Unsupported norm type: {norm_type}")
+    param_fn, fwd_fn = FWD_NORM_MAPPING[norm_type]
+    p = param_fn(**opts)
+    return np.array(fwd_fn(θ, p))
 
 def make_spd(
     A: np.ndarray,
@@ -119,7 +130,7 @@ def create_rheology_field(cfg, hyper_params=[]):
         Λ = np.linalg.inv(Σ + 1e-8 * np.eye(2))
 
     # Create and return joint field
-    return RheologyFieldLambdaMatrix(matfile, Λ)
+    return RheologyFieldLambdaMatrix(matfile, Λ, mask=cfg.matrix.mask)
 
 
 def precondition_matrix(G, S):
@@ -416,12 +427,22 @@ class RheologyFieldLambdaMatrix(eqx.Module):
     matrix_data: dict
     S: jnp.ndarray
 
-    def __init__(self, matfile: str | dict, Lambda: jnp.ndarray):
+    def __init__(self, matfile: str | dict, Lambda: jnp.ndarray, mask: str = None):
 
         with h5py.File(matfile, "r") as fid:
-            self.G_B = fid['B/G'][()]
-            self.G_n = fid['n/G'][()]
+            G_B = fid['B/G'][()]
+            G_n = fid['n/G'][()]
 
+        # Optional coefficient mask (e.g., for removing ill-constrained wavelets)
+        if mask != "none":
+            with h5py.File(mask, "r") as fid:
+                mask_B = fid["B"][()].astype(bool)
+                mask_n = fid["n"][()].astype(bool)
+                G_B = G_B[:, mask_B]
+                G_n = G_n[:, mask_n]
+
+        self.G_B = G_B
+        self.G_n = G_n
         self.N_B = self.G_B.shape[1]
         self.N_n = self.G_n.shape[1]
         self.M = self.G_B.shape[0]
