@@ -68,7 +68,7 @@ def parse():
     return parser.parse_known_args()
 
 
-def main(args, extra_args):
+def main(cfg, args):
 
     # Number of ensemble members is set to the number of MPI processes
     # We force each ensemble member to only use 1 MPI process
@@ -83,11 +83,6 @@ def main(args, extra_args):
         sys.stdout.flush()
         comm.Barrier()
     
-    # Load configuration
-    cfg = jbao.utils.parse_toml(args.cfg, default="default_config.toml")
-    extra_args.extend(["--data.amp", args.amp])
-    extra_args.extend(["--data.loc", args.loc])
-    cfg = jbao.utils.update_cfg_with_extra(cfg, extra_args)
     outdir = cfg.output_dir
     data_file = fu.data_filename(cfg, args)
 
@@ -140,6 +135,7 @@ def main(args, extra_args):
         sys.exit()
 
     # Regularization
+    mpi_print(f'Regularization factor: {cfg.vi.hess_reg}')
     H = H + cfg.vi.hess_reg * np.eye(H.shape[0])
     cov = np.linalg.inv(H)
 
