@@ -261,8 +261,8 @@ def _petsc_opts(dirichlet_ids, side_wall_ids, **_):
         "side_wall_ids": side_wall_ids,
         "diagnostic_solver_type": "petsc",
         "diagnostic_solver_parameters": {
-            "snes_linesearch_type": "newtonls",
-            "snes_linesearch_type": "nleqerr",
+            "snes_type": "newtonls",
+            "snes_linesearch_type": "bt",
             "ksp_type": "preonly",
             "pc_type": "lu",
             "pc_factor_mat_solver_type": "mumps",
