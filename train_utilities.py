@@ -53,7 +53,7 @@ def initialize_objects(
     # Initialize a firedrake -> numpy function converter
     converter = NumpyConverter(
         coord_file=data_file,
-        shelf_file="aux/coords_rutford_inverse_shelf.txt",
+        shelf_file=cfg.shelf_coords_file,
     )
 
     if data_file is None:
