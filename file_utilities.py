@@ -87,6 +87,8 @@ def data_filename(cfg, args):
     outdir = cfg.output_dir
     if args is None:
         return os.path.join(outdir, "data_inverse.h5")
+    elif args.amp == "None":
+        return os.path.join(outdir, "data_inverse.h5")
     else:
         loc = f"{args.loc}"
         amp = f"amp-{args.amp}"
@@ -384,18 +386,21 @@ def make_inverse_digest(
     return digest
 
 
-def make_geom_digest(cfg: DictToStruct) -> str:
-    digest = _short_hash({"matrix": cfg.matrix.todict()}, digest_bytes=4)
+def make_geom_digest(cfg: DictToStruct, ignore=["use_ref",]) -> str:
+    mat_cfg = cfg.matrix.todict()
+    for key in ignore:
+        del mat_cfg[key]
+    digest = _short_hash({"matrix": mat_cfg}, digest_bytes=4)
     return digest
 
 
 def make_matrix_filename(cfg: DictToStruct) -> str:
+    digest = make_geom_digest(cfg)
     if cfg.matrix.use_ref:
-        return "ref_data/matrix_data.h5"
+        mdir = "ref_data"
     else:
-        outdir = cfg.output_dir
-        digest = make_geom_digest(cfg)
-        return os.path.join(outdir, f"matrix_data_{digest}.h5")
+        mdir = cfg.output_dir
+    return os.path.join(mdir, f"matrix_data_{digest}.h5")
 
 
 def make_results_filename(
