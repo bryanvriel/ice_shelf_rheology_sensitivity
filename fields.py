@@ -455,7 +455,8 @@ class RheologyFieldLambdaMatrix(eqx.Module):
         }
 
         # Build precision matrix
-        self.S = cryogen.build_lambda_precision(Lambda, self.N_B)
+        self.S = cryogen.build_lambda_precision(Lambda, self.N_B, self.N_n)
+
 
     @eqx.filter_jit
     def __call__(self, z: jnp.ndarray) -> jnp.ndarray:
