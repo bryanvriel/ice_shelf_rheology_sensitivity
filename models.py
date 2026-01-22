@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from operator import itemgetter
 import numpy as np
 from scipy.special import erfinv
 import sys
@@ -10,6 +11,7 @@ from firedrake import (
     inner,
     sqrt,
     grad,
+    dot,
     dx,
     ds,
     sym,
@@ -56,6 +58,19 @@ def terminus_perturbation(**kwargs):
     # Differential stress normal to the element faces
     ν = firedrake.FacetNormal(u.ufl_domain())
     return (τ_I - τ_W) * inner(u, ν)
+
+
+def terminus_force(**kwargs):
+    Fu = kwargs["force_action"]
+    ν = firedrake.FacetNormal(Fu.ufl_domain())
+    return inner(Fu, ν)
+
+
+def general_neumann(**kwargs):
+    u = kwargs["velocity"]
+    h = kwargs["thickness"]
+    traction = kwargs['traction']
+    return h * inner(traction, u)
 
 
 def inv_norm_tanh(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
@@ -230,6 +245,17 @@ def viscosity_damaged(**kwargs):
     return custom_viscosity(
         velocity=u, thickness=h, fluidity=(1 - D) ** (-n) * A, exponent=n
     )
+
+
+def membrane_stress(**kwargs):
+    """
+    Computes stress tensor.
+    """
+    ε, B, n = itemgetter("strain_rate", "rigidity", "exponent")(kwargs)
+    ε_e = effective_strain_rate(ε, strain_rate_min)
+    μ = 0.5 * B * ε_e ** (1 / n - 1)
+    I = Identity(ε.ufl_domain().geometric_dimension())
+    return 2 * μ * (ε + trace(ε) * I)
 
 
 class CustomIceShelf(icepack.models.IceShelf):
