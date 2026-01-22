@@ -117,6 +117,8 @@ def create_rheology_field(cfg, hyper_params=[]):
     else:
         raise ValueError('hyper_params can only have 0, 2, or 3 elements.')
 
+    print('Field hyperparameters:', σ_B, σ_n, ρ)
+
     # Construct prior block covariance matrix
     Σ = np.array([
         [σ_B**2, ρ * σ_B * σ_n],
