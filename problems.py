@@ -2,6 +2,7 @@
 
 from functools import partial
 import numpy as np
+from scipy.spatial import cKDTree
 import h5py
 import os
 from typing import Optional, Tuple
@@ -53,6 +54,7 @@ class IceShelfProblem:
         solver_type="petsc",
         n_norm="tanh",
         B_norm="log",
+        use_strain=False,
         fixed_exponent=False,
     ):
 
@@ -108,6 +110,7 @@ class IceShelfProblem:
         self.e_yy = []
         self.σ_eps = firedrake.Constant(0.001)
         self.σ_u_default = default_vel_error
+        self.use_strain = use_strain
 
         # Placeholders for rheology fields (only used when fixed_exponent = True)
         # Also used for self.reset_solver()
@@ -128,13 +131,37 @@ class IceShelfProblem:
     @property
     def controls(self):
         if self.fixed_exponent:
-            return self.θ_B
+            return [self.θ_B,]
         else:
             return [self.θ_B, self.θ_n]
 
     @controls.setter
     def controls(self, value):
         raise ValueError("Cannot set controls.")
+
+    def grid_to_mesh_array(self, grid, grid_coords):
+
+        mesh_coords = (self.coords[:, 0], self.coords[:, 1])
+
+        def _interp_to_mesh(
+            array: np.ndarray, grid_coords: Tuple[np.ndarray, np.ndarray],
+        ) -> np.ndarray:
+            """Simple interpolation of ``array`` onto the mesh coordinates."""
+            return interpolate.interp(array, grid_coords, mesh_coords)
+
+        if grid.ndim == 3:
+            interpolated = np.column_stack(
+                [
+                    _interp_to_mesh(grid[i], grid_coords)
+                    for i in range(grid.shape[0])
+                ]
+            )
+        elif grid.ndim == 2:
+            interpolated = _interp_to_mesh(grid, grid_coords)
+        else:
+            raise ValueError('Grid has unsupported shape.')
+
+        return interpolated
 
     def load_observations(self, data_file, time_ind: Optional[list] = None):
         """Load observation fields defined on a structured grid.
@@ -146,47 +173,8 @@ class IceShelfProblem:
         time_ind:
             List of time indices to load. If ``None``, all epochs are used.
         """
-
-        mesh_coords = (self.coords[:, 0], self.coords[:, 1])
-
-        def _interp_to_mesh(array: np.ndarray,
-                            grid_coords: Tuple[np.ndarray, np.ndarray]) -> np.ndarray:
-            """Simple interpolation of ``array`` onto the mesh coordinates."""
-            return interpolate.interp(array, grid_coords, mesh_coords)
-
-        def _interp_field(field_array: np.ndarray,
-                          grid_coords: Tuple[np.ndarray, np.ndarray],
-                          target_fn: firedrake.Function) -> None:
-            """Interpolate ``field_array`` to ``target_fn``'s mesh.
-
-            Parameters
-            ----------
-            field_array:
-                ``(Ny, Nx)`` array for scalar targets or ``(2, Ny, Nx)`` for
-                two-component vector targets.
-            grid_coords:
-                Tuple of ``(x, y)`` coordinate arrays defining ``field_array``.
-            target_fn:
-                Firedrake function whose ``.dat.data`` will be populated with
-                the interpolated values. Modified in place.
-            """
-            if field_array.ndim == 3:
-                interpolated = np.column_stack(
-                    [_interp_to_mesh(field_array[i], grid_coords)
-                     for i in range(field_array.shape[0])]
-                )
-            elif field_array.ndim == 2:
-                interpolated = _interp_to_mesh(field_array, grid_coords)
-            else:
-                raise ValueError('Field array has unsupported shape.')
-
-            target_fn.dat.data[:] = interpolated
-
         with h5py.File(data_file, "r") as fid:
-            h, u, e_xx, e_xy, e_yy = [
-                fid[key][()] for key in
-                ("h", "u", "e_xx", "e_xy", "e_yy")
-            ]
+            h, u = [fid[key][()] for key in ('h', 'u')]
             grid_coords = (fid["x"][()], fid["y"][()])
 
             if time_ind is None:
@@ -195,8 +183,14 @@ class IceShelfProblem:
             else:
                 self.Nt = len(time_ind)
 
+            if self.use_strain:
+                e_xx, e_xy, e_yy = [
+                    fid[key][()] for key in
+                    ("e_xx", "e_xy", "e_yy")
+                ]
+
         # Thickness is time-averaged
-        self.h.dat.data[:] = _interp_to_mesh(h, grid_coords)
+        self.h.dat.data[:] = self.grid_to_mesh_array(h, grid_coords)
 
         # Interpolate the time epoch data
         for k in time_ind:
@@ -204,34 +198,83 @@ class IceShelfProblem:
             # Local function spaces
             u_k = firedrake.Function(self.V)
             σ_k = firedrake.Function(self.V)
-            e_xx_k = firedrake.Function(self.Q)
-            e_xy_k = firedrake.Function(self.Q)
-            e_yy_k = firedrake.Function(self.Q)
+            #e_xx_k = firedrake.Function(self.Q)
+            #e_xy_k = firedrake.Function(self.Q)
+            #e_yy_k = firedrake.Function(self.Q)
 
             # Interpolate velocity components and errors
-            _interp_field(u[k], grid_coords, u_k)
-            #_interp_field(u_sigma[k], grid_coords, σ_k)
+            u_k.dat.data[:] = self.grid_to_mesh_array(u[k], grid_coords)
             σ_k.dat.data[:] = self.σ_u_default
+            #_interp_field(u_sigma[k], grid_coords, σ_k)
 
             # Interpolate strain components
-            _interp_field(e_xx[k], grid_coords, e_xx_k)
-            _interp_field(e_xy[k], grid_coords, e_xy_k)
-            _interp_field(e_yy[k], grid_coords, e_yy_k)
+            #_interp_field(e_xx[k], grid_coords, e_xx_k)
+            #_interp_field(e_xy[k], grid_coords, e_xy_k)
+            #_interp_field(e_yy[k], grid_coords, e_yy_k)
 
             # Append to lists
             self.u.append(u_k)
             self.σ_u.append(σ_k)
-            self.e_xx.append(e_xx_k)
-            self.e_xy.append(e_xy_k)
-            self.e_yy.append(e_yy_k)
+            #self.e_xx.append(e_xx_k)
+            #self.e_xy.append(e_xy_k)
+            #self.e_yy.append(e_yy_k)
 
         self._obs_init = True
 
-    def load_rheology(self, dirname):
-        print('Loading true rheology')
-        with rasterio.open(os.path.join(dirname, "n_exp.tif")) as r_n:
-            n_fn = icepack.interpolate(r_n, self.Q)
+    def smooth_boundaries(self, alpha_mag=3.0e3, alpha_theta=4.0e3):
 
+        # Get boundary coordinates
+        bc = firedrake.DirichletBC(self.V, 0, "on_boundary")
+        boundary_node_indices = bc.nodes
+        edge_coords = self.coords[boundary_node_indices]
+
+        # Compute centroid
+        centroid = edge_coords.mean(axis=0)
+
+        # Compute angles from centroid
+        angles = np.arctan2(
+            edge_coords[:, 1] - centroid[1],
+            edge_coords[:, 0] - centroid[0]
+        )
+
+        # Sort counter-clockwise
+        ccw_order = np.argsort(angles)
+        boundary_node_indices = boundary_node_indices[ccw_order]
+        edge_coords = self.coords[boundary_node_indices]
+        s_edge = compute_path_length(edge_coords[:, 0], edge_coords[:, 1])
+        self.boundary_node_indices = boundary_node_indices
+
+        def _smooth(ref_array, alpha):
+            bvals = ref_array
+            smooth_vals = helmholtz_1d_nonuniform(s_edge, bvals, alpha)
+            return bvals, smooth_vals
+
+        # Smooth the boundary data
+        for k in range(self.Nt):
+            u = self.u[k].dat.data_ro[boundary_node_indices, :]
+            mag = np.linalg.norm(u, axis=1)
+            theta = np.degrees(np.arctan2(u[:, 1], u[:, 0]))
+            mag, mag_smooth = _smooth(mag, alpha_mag)
+            theta, theta_smooth = _smooth(theta, alpha_theta)
+            u = mag_smooth * np.cos(np.radians(theta_smooth))
+            v = mag_smooth * np.sin(np.radians(theta_smooth))
+            self.u[k].dat.data[boundary_node_indices] = np.column_stack((u, v))
+
+    def load_rheology(self, dirname, n_exp=None):
+        print('Loading true rheology')
+        try:
+            with rasterio.open(os.path.join(dirname, "n_exp.tif")) as r_n:
+                n_fn = icepack.interpolate(r_n, self.Q)
+        except rasterio.errors.RasterioIOError:
+            n_fn = firedrake.Function(self.Q)
+            n_fn.dat.data[:] = 3.0
+
+        # Overwrite with any exponent provided as kwarg
+        if n_exp is not None:
+            print('Setting exponent to', n_exp)
+            n_fn.dat.data[:] = n_exp
+
+        # Normalize and assemble
         θ_n = self._fwd_norm_n(n_fn)
         self.θ_n = assemble(firedrake.interpolate(θ_n, self.Q))
 
@@ -310,17 +353,24 @@ class IceShelfProblem:
 
         return u_pred
 
-    def _forward_rigidity(self, θ_B):
-        u_pred = self.solver.diagnostic_solve(
-            velocity=self.u[0],
-            thickness=self.h,
-            norm_rigidity=θ_B,
-            norm_exponent=self.θ_n,
-            **self.solver_kwargs,
-        )
-        return [
-            u_pred,
-        ]
+    def _forward_rigidity(self, params):
+        θ_B = params[0]
+        B = assemble(firedrake.interpolate(self._inv_norm_B(θ_B), self.Q))
+        n_exp = assemble(firedrake.interpolate(self._inv_norm_n(self.θ_n), self.Q))
+
+        # Loop over epochs to compute velocities
+        u_pred = []
+        for k in range(self.Nt):
+            u_pred.append(
+                self.solvers[k].diagnostic_solve(
+                    velocity=self.u[k],
+                    thickness=self.h,
+                    rigidity=B,
+                    exponent=n_exp,
+                )
+            )
+
+        return u_pred
 
     def _forward_strain(self, params):
 
@@ -406,6 +456,99 @@ class IceShelfProblem:
                 rigidity=self.θ_B,
                 exponent=self.θ_n,
             )
+
+
+def helmholtz_1d_nonuniform(s, y, alpha, bc="dirichlet"):
+    """
+    Solve (I - alpha^2 d2/ds2) u = y on a 1D grid s (possibly nonuniform).
+
+    bc:
+      - "neumann": u'(0)=u'(L)=0 (open boundary)
+      - "dirichlet": u(0)=y(0), u(L)=y(L)
+    """
+    s = np.asarray(s, float)
+    y = np.asarray(y, float)
+    assert s.ndim == 1 and y.ndim == 1 and s.size == y.size
+    n = s.size
+    if n < 3:
+        return y.copy()
+
+    ds = np.diff(s)
+    if np.any(ds <= 0):
+        raise ValueError("s must be strictly increasing.")
+
+    a = np.zeros(n)  # sub-diagonal (a[i] couples u[i-1])
+    b = np.ones(n)   # main diagonal
+    c = np.zeros(n)  # super-diagonal (c[i] couples u[i+1])
+    rhs = y.copy()
+
+    # Interior: u'' approx on nonuniform grid
+    # u''_i ≈ 2[(u_{i+1}-u_i)/ds_i - (u_i-u_{i-1})/ds_{i-1}] / (ds_{i-1}+ds_i)
+    for i in range(1, n-1):
+        dsm = ds[i-1]
+        dsp = ds[i]
+        denom = dsm + dsp
+        A =  2.0 / (dsm * denom)          # coeff for u_{i-1}
+        C =  2.0 / (dsp * denom)          # coeff for u_{i+1}
+        B = -(A + C)                      # coeff for u_i
+        # u_i - alpha^2 * (A u_{i-1} + B u_i + C u_{i+1}) = y_i
+        a[i] = -alpha**2 * A
+        b[i] = 1.0 - alpha**2 * B
+        c[i] = -alpha**2 * C
+
+    # Boundary rows
+    if bc == "neumann":
+        # Use ghost-point reflection: u_-1 = u_1, u_n = u_{n-2}
+        # For left: u''_0 ≈ 2*(u_1 - u_0)/ds0^2
+        ds0 = ds[0]
+        c[0] = -alpha**2 * (2.0 / ds0**2)
+        b[0] = 1.0 + alpha**2 * (2.0 / ds0**2)
+
+        # For right: u''_{n-1} ≈ 2*(u_{n-2} - u_{n-1})/ds_{n-2}^2
+        dsn = ds[-1]
+        a[n-1] = -alpha**2 * (2.0 / dsn**2)
+        b[n-1] = 1.0 + alpha**2 * (2.0 / dsn**2)
+
+    elif bc == "dirichlet":
+        # u(0)=y(0), u(L)=y(L)
+        b[0] = 1.0; c[0] = 0.0; rhs[0] = y[0]
+        b[n-1] = 1.0; a[n-1] = 0.0; rhs[n-1] = y[-1]
+    else:
+        raise ValueError("bc must be 'neumann' or 'dirichlet'.")
+
+    # Thomas algorithm for tridiagonal solve
+    # Forward elimination
+    cp = c.copy()
+    bp = b.copy()
+    rp = rhs.copy()
+
+    for i in range(1, n):
+        m = a[i] / bp[i-1]
+        bp[i] -= m * cp[i-1]
+        rp[i] -= m * rp[i-1]
+
+    # Back substitution
+    u = np.zeros(n)
+    u[-1] = rp[-1] / bp[-1]
+    for i in range(n-2, -1, -1):
+        u[i] = (rp[i] - cp[i] * u[i+1]) / bp[i]
+
+    return u
+
+
+def compute_path_length(x, y):
+    """
+    Computes path length along a path specified by X and Y points. Simply accumulates
+    Euclidean distance between points.
+    """
+    # Compute distances
+    dist = np.sqrt((x[1:] - x[:-1])**2 + (y[1:] - y[:-1])**2)
+
+    # Cumulative sum
+    s = np.zeros_like(x)
+    s[1:] = np.cumsum(dist)
+
+    return s
 
 
 # end of file
