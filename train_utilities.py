@@ -76,7 +76,11 @@ def initialize_objects(
     else:
         problem = IceShelfProblem(cfg, mesh, fixed_exponent=True, **kwargs)
         problem.load_observations(data_file, time_ind=time_ind)
-        problem.load_rheology(outdir)
+        problem.load_rheology(outdir, n_exp=cfg.inverse.fixed_n)
+
+    # Optional boundary smoothing
+    if cfg.inverse.smooth_boundary:
+        problem.smooth_boundaries()
     problem.init_solvers()
 
     # Create the optimization objective object
@@ -469,7 +473,7 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
 
     objective.controls = θ_np
     if problem.fixed_exponent:
-        θ_B = objective.controls
+        θ_B = objective.controls[0]
         θ_n = problem.θ_n
     else:
         θ_B, θ_n = objective.controls
