@@ -33,10 +33,17 @@ def main(cfg, args):
     data_file = fu.data_filename(cfg, args)
     print("Data file:", data_file)
 
+    # Update hyperparameters from calibration
+    if args.cal or args.disc:
+        cal = jbao.utils.parse_toml("calibration.toml").todict()[cfg.output_dir]
+        if args.cal:
+            cfg = cfg.update("inverse.hyper_params", cal["calibration_hyper_params"])
+        else:
+            cfg = cfg.update("inverse.hyper_params", cal["discovery_hyper_params"])
+
     # Create objects
     field, problem, objective, converter = tu.initialize_objects(
-        cfg,
-        data_file,
+        cfg, data_file,
     )
 
     # Output filename
@@ -119,10 +126,10 @@ def main(cfg, args):
         z, opt_state, losses = tu.optimize_bfgs(
             objective,
             z,
-            factr=0.001,
-            maxcor=10,
+            factr=cfg.inverse.bfgs_factr,
+            maxcor=cfg.inverse.bfgs_maxcor,
             method="L-BFGS-B",
-            maxiter=2000,
+            maxiter=1000,
         )
 
     else:
