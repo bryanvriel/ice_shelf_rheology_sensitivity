@@ -19,7 +19,7 @@ import chex
 from typing import NamedTuple
 
 from firedrake import interpolate as fd_interpolate
-from firedrake import assemble
+from firedrake import assemble, ln
 
 from iceinfer import Timer
 import rasterio
@@ -69,6 +69,7 @@ def initialize_objects(
         B_norm=cfg.inverse.B_norm_type,
         n_norm=cfg.inverse.n_norm_type,
         default_vel_error=cfg.data.u_sigma,
+        dirichlet_ids=cfg.inverse.dirichlet_ids,
     )
     if cfg.inverse.joint:
         problem = IceShelfProblem(cfg, mesh, **kwargs)
@@ -245,9 +246,10 @@ def optimize_bfgs(
             options=options,
             callback=tracker,
         )
-        print(result.message)
-        print("Final function value:", result.fun)
-        print("Number of iterations:", result.nit)
+        if verbose:
+            print(result.message)
+            print("Final function value:", result.fun)
+            print("Number of iterations:", result.nit)
 
     return (
         result.x,
@@ -486,11 +488,15 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
 
     # Evaluate rheology fields
     out_preds = {"z": z, "x": x_out, "y": y_out, "final_loss": loss}
-    B = problem._inv_norm_B(θ_B)
     n = problem._inv_norm_n(θ_n)
+    B = problem._inv_norm_B(θ_B)
+
+    # Also evaluate reference viscosity field
+    log_nu = ln(0.5 * B) + (1 - n) / n * problem.log_e_ref
 
     out_preds["B"] = converter(assemble(fd_interpolate(B, problem.Q)))
     out_preds["n"] = converter(assemble(fd_interpolate(n, problem.Q)))
+    out_preds["log_nu"] = converter(assemble(fd_interpolate(log_nu, problem.Q)))
 
     for i, p in enumerate(preds):
         out_preds[f"u{i}"] = converter(p)
