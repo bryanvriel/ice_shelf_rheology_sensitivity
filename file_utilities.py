@@ -37,6 +37,16 @@ def common_parse() -> argparse.ArgumentParser:
         help="Perturbation location from (terminus, GL). Default: GL.",
     )
     parser.add_argument(
+        "--cal",
+        action="store_true",
+        help="Use calibration file to set calibration hyperparameters.",
+    )
+    parser.add_argument(
+        "--disc",
+        action="store_true",
+        help="Use calibration file to set discovery hyperparameters.",
+    )
+    parser.add_argument(
         "-r",
         action="store_true",
         dest="restore",
