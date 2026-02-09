@@ -56,6 +56,7 @@ class IceShelfProblem:
         B_norm="log",
         use_strain=False,
         fixed_exponent=False,
+        temporal_cov=True,
     ):
 
         # Initialize functional spaces
@@ -108,6 +109,7 @@ class IceShelfProblem:
         self.e_xx = []
         self.e_xy = []
         self.e_yy = []
+        self.log_e_ref = firedrake.Function(self.Q)
         self.σ_eps = firedrake.Constant(0.001)
         self.σ_u_default = default_vel_error
         self.use_strain = use_strain
@@ -116,6 +118,13 @@ class IceShelfProblem:
         # Also used for self.reset_solver()
         self.θ_B = firedrake.Function(self.Q)
         self.θ_n = firedrake.Function(self.Q)
+
+        # Set the NLL function, depending on whether we want temporal covariance
+        self.temporal_cov = temporal_cov
+        if temporal_cov:
+            self.data_nll = self._data_nll_covariance
+        else:
+            self.data_nll = self._data_nll
 
         # List of control variables
         # Not used here, but as an interface to FiredrakeObjective
@@ -174,7 +183,7 @@ class IceShelfProblem:
             List of time indices to load. If ``None``, all epochs are used.
         """
         with h5py.File(data_file, "r") as fid:
-            h, u = [fid[key][()] for key in ('h', 'u')]
+            h, u, e_ref = [fid[key][()] for key in ('h', 'u', 'eps_ref')]
             grid_coords = (fid["x"][()], fid["y"][()])
 
             if time_ind is None:
@@ -189,8 +198,13 @@ class IceShelfProblem:
                     ("e_xx", "e_xy", "e_yy")
                 ]
 
-        # Thickness is time-averaged
+            if self.temporal_cov:
+                self.C_temporal = fid["C_temporal"][()]
+
+        # Time-invariant fields
         self.h.dat.data[:] = self.grid_to_mesh_array(h, grid_coords)
+        self.log_e_ref.dat.data[:] = self.grid_to_mesh_array(np.log(e_ref), grid_coords)
+        self.e_ref_grid = e_ref
 
         # Interpolate the time epoch data
         for k in time_ind:
@@ -329,15 +343,30 @@ class IceShelfProblem:
 
             return inv, fwd
 
-        self._inv_norm_B, self._fwd_norm_B = create_fn(B_norm, "B")
-        self._inv_norm_n, self._fwd_norm_n = create_fn(n_norm, "n")
+        if B_norm == "viscosity":
+            _inv_norm, self._fwd_norm_n = create_fn(n_norm, "n")
+            def _inv_norm_n(theta):
+                n = _inv_norm(theta)
+                self.θ_n = assemble(firedrake.interpolate(theta, self.Q))
+                return n
+            self._inv_norm_n = _inv_norm_n
+
+            def _inv_norm_B(theta_nu):
+                n_exp = self._inv_norm_n(self.θ_n)
+                return viscosity_to_rigidity(theta_nu, self.log_e_ref, n_exp)
+            self._inv_norm_B = _inv_norm_B
+
+        else:
+            self._inv_norm_B, self._fwd_norm_B = create_fn(B_norm, "B")
+            self._inv_norm_n, self._fwd_norm_n = create_fn(n_norm, "n")
+
 
     def _forward(self, params):
 
         # Unpack and un-normalize parameters
         θ_B, θ_n = params
-        B = assemble(firedrake.interpolate(self._inv_norm_B(θ_B), self.Q))
         n_exp = assemble(firedrake.interpolate(self._inv_norm_n(θ_n), self.Q))
+        B = assemble(firedrake.interpolate(self._inv_norm_B(θ_B), self.Q))
 
         # Loop over epochs to compute velocities
         u_pred = []
@@ -404,7 +433,7 @@ class IceShelfProblem:
 
         return [u0, u1, e0_xx, e0_xy, e0_yy, e1_xx, e1_xy, e1_yy]
 
-    def data_nll(self, u_pred):
+    def _data_nll(self, u_pred):
         misfits = []
         for k in range(self.Nt):
             du = u_pred[k] - self.u[k]
@@ -413,6 +442,33 @@ class IceShelfProblem:
             )
         sum_misfit = sum(misfits)
         return 0.5 * self.nll_scale * sum_misfit * firedrake.dx
+
+    def _data_nll_covariance(self, u_pred):
+        """
+        Correlated-Gaussian data NLL across epochs.
+
+        Uses:
+            self.C_temporal : (Nt, Nt) inverse temporal correlation/covariance
+        """
+        Nt = self.Nt
+        Ct = self.C_temporal
+
+        # Build whitened residual fields for each epoch and component
+        rx = []
+        ry = []
+        for k in range(Nt):
+            du = u_pred[k] - self.u[k]
+            rx.append(du[0] / self.σ_u[k][0])  # U component, whitened
+            ry.append(du[1] / self.σ_u[k][1])  # V component, whitened
+
+        # Quadratic form r^T Ct r = sum_{i,j} Ct[i,j] r_i r_j
+        integrand = 0
+        for i in range(Nt):
+            for j in range(Nt):
+                cij = float(Ct[i, j])  # scalar coefficient
+                integrand += cij * (rx[i] * rx[j] + ry[i] * ry[j])
+
+        return 0.5 * self.nll_scale * integrand * firedrake.dx
 
     def data_strain_nll(self, predictions):
 
@@ -456,6 +512,12 @@ class IceShelfProblem:
                 rigidity=self.θ_B,
                 exponent=self.θ_n,
             )
+
+
+def viscosity_to_rigidity(log_nu, log_eps_eff, n_exp):
+    a = firedrake.Constant(np.log(2.0))
+    log_B = a + log_nu + (n_exp - 1) / n_exp * log_eps_eff
+    return firedrake.exp(log_B)
 
 
 def helmholtz_1d_nonuniform(s, y, alpha, bc="dirichlet"):
