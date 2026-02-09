@@ -29,7 +29,7 @@ def inv_norm(θ, opts, norm_type):
         raise ValueError(f"Unsupported norm type: {norm_type}")
     param_fn, inv_fn = NORM_MAPPING[norm_type]
     p = param_fn(**opts)
-    return np.array(inv_fn(θ, p))
+    return inv_fn(θ, p)
 
 def fwd_norm(θ, opts, norm_type):
     if norm_type not in FWD_NORM_MAPPING:
