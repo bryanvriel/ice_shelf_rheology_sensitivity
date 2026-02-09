@@ -258,11 +258,55 @@ def membrane_stress(**kwargs):
     return 2 * μ * (ε + trace(ε) * I)
 
 
+def gravity(**kwargs):
+    r"""Return the gravitational part of the ice shelf action functional
+
+    The gravitational part of the ice shelf action functional is
+
+    .. math::
+        E(u) = -\frac{1}{2}\int_\Omega\varrho g\nabla h^2\cdot u\; dx
+
+    Parameters
+    ----------
+    u : firedrake.Function
+        ice velocity
+    h : firedrake.Function
+        ice thickness
+
+    Returns
+    -------
+    firedrake.Form
+    """
+    u, h = itemgetter("velocity", "thickness")(kwargs)
+    ρ = ρ_I * (1 - ρ_I / ρ_W)
+    return -0.5 * ρ * g * inner(grad(h**2), u)
+
+
+def gravity_with_sea_surface(**kwargs):
+    u, h = itemgetter("velocity", "thickness")(kwargs)
+
+    # sea_surface is η(x,y,t); default 0
+    η = kwargs.get("sea_surface", firedrake.Constant(0.0))
+
+    ρ_red = ρ_I * (1 - ρ_I / ρ_W)
+
+    # existing flotation driving term
+    term_flotation = -0.5 * ρ_red * g * inner(grad(h**2), u)
+
+    # NEW: barotropic tide / ocean pressure-gradient driving
+    term_eta = -ρ_I * g * inner(h * grad(η), u)
+
+    return term_flotation + term_eta
+
+
 class CustomIceShelf(icepack.models.IceShelf):
     def __init__(
-        self, viscosity=rigidity_with_exponent, terminus=terminus_perturbation
+        self,
+        viscosity=rigidity_with_exponent,
+        terminus=terminus_perturbation,
+        gravity=gravity,
     ):
-        super().__init__(viscosity=viscosity, terminus=terminus)
+        super().__init__(viscosity=viscosity, terminus=terminus, gravity=gravity)
 
 
 # Solver option constructors -------------------------------------------------

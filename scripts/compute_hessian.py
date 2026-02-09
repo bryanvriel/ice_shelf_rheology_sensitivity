@@ -86,6 +86,14 @@ def main(cfg, args):
     outdir = cfg.output_dir
     data_file = fu.data_filename(cfg, args)
 
+    # Update hyperparameters from calibration
+    if args.cal or args.disc:
+        cal = jbao.utils.parse_toml("calibration.toml").todict()[cfg.output_dir]
+        if args.cal:
+            cfg = cfg.update("inverse.hyper_params", cal["calibration_hyper_params"])
+        else:
+            cfg = cfg.update("inverse.hyper_params", cal["discovery_hyper_params"])
+
     # Create objects
     field, problem, objective, converter = tu.initialize_objects(
         cfg,
