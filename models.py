@@ -187,25 +187,30 @@ def unnormalize_rheology_log(**kwargs):
 
 def normalized_rheology(**kwargs):
     B, n = unnormalize_rheology(**kwargs)
-    return rigidity_with_exponent(rigidity=B, exponent=n, **kwargs)
+    return rigidity_with_exponent(
+        rigidity=B, flow_law_exponent=n, **kwargs,
+    )
 
 
 def normalized_rheology_arctan(**kwargs):
     B, n = unnormalize_rheology_arctan(**kwargs)
-    return rigidity_with_exponent(rigidity=B, exponent=n, **kwargs)
+    return rigidity_with_exponent(
+        rigidity=B, flow_law_exponent=n, **kwargs,
+    )
 
 
 def normalized_rheology_log(**kwargs):
     B, n = unnormalize_rheology_log(**kwargs)
-    return rigidity_with_exponent(rigidity=B, exponent=n, **kwargs)
-
+    return rigidity_with_exponent(
+        rigidity=B, flow_law_exponent=n, **kwargs,
+    )
 
 def rigidity_with_exponent(**kwargs):
 
     u = kwargs["velocity"]
     h = kwargs["thickness"]
     B = kwargs["rigidity"]
-    n = kwargs["exponent"]
+    n = kwargs["flow_law_exponent"]
     ε_min = firedrake.Constant(strain_rate_min)
 
     ε = sym_grad(u)
@@ -236,22 +241,11 @@ def velocity_to_effective(u):
     return ε_e
 
 
-def viscosity_damaged(**kwargs):
-    u = kwargs["velocity"]
-    h = kwargs["thickness"]
-    A = kwargs["fluidity"]
-    D = kwargs["damage"]
-    n = kwargs["exponent"]
-    return custom_viscosity(
-        velocity=u, thickness=h, fluidity=(1 - D) ** (-n) * A, exponent=n
-    )
-
-
 def membrane_stress(**kwargs):
     """
     Computes stress tensor.
     """
-    ε, B, n = itemgetter("strain_rate", "rigidity", "exponent")(kwargs)
+    ε, B, n = itemgetter("strain_rate", "rigidity", "flow_law_exponent")(kwargs)
     ε_e = effective_strain_rate(ε, strain_rate_min)
     μ = 0.5 * B * ε_e ** (1 / n - 1)
     I = Identity(ε.ufl_domain().geometric_dimension())

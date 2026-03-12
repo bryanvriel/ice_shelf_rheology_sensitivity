@@ -56,7 +56,7 @@ class IceShelfProblem:
         B_norm="log",
         use_strain=False,
         fixed_exponent=False,
-        temporal_cov=True,
+        temporal_cov=False,
     ):
 
         # Initialize functional spaces
@@ -376,7 +376,7 @@ class IceShelfProblem:
                     velocity=self.u[k],
                     thickness=self.h,
                     rigidity=B,
-                    exponent=n_exp,
+                    flow_law_exponent=n_exp,
                 )
             )
 
@@ -395,7 +395,7 @@ class IceShelfProblem:
                     velocity=self.u[k],
                     thickness=self.h,
                     rigidity=B,
-                    exponent=n_exp,
+                    flow_law_exponent=n_exp,
                 )
             )
 
@@ -510,7 +510,7 @@ class IceShelfProblem:
                 velocity=self.u[k],
                 thickness=self.h,
                 rigidity=self.θ_B,
-                exponent=self.θ_n,
+                flow_law_exponent=self.θ_n,
             )
 
 
