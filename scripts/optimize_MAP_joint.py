@@ -47,7 +47,7 @@ def main(cfg, args):
     )
 
     # Output filename
-    outfile = fu.make_results_filename(cfg)
+    outfile = args.output or fu.make_results_filename(cfg)
     print("Output file:", outfile)
 
     # Restore from previous
