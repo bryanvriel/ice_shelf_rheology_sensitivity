@@ -60,6 +60,13 @@ def common_parse() -> argparse.ArgumentParser:
         dest="restore_stage",
         help="Integer stage to restore from. Default: None.",
     )
+    parser.add_argument(
+        "--output",
+        action="store",
+        type=str,
+        default=None,
+        help="Force output filename. Default: None.",
+    )
     return parser
 
 
