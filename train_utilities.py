@@ -60,6 +60,7 @@ def initialize_objects(
         return field, converter
 
     # Make mesh
+    print('Mesh file:', cfg.inverse.meshfile)
     mesh = make_mesh(meshfile=cfg.inverse.meshfile, comm=comm)
 
     # Now, create a problem with a more reasonable area scale

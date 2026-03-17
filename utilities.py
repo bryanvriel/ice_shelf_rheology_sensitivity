@@ -43,10 +43,11 @@ class NumpyConverter:
         # Load shelf coordinates
         if shelf_file is None:
             shelf_file = 'aux/coords_rutford_simplified_shelf.txt'
+        print(f'NumpyConverter is using {shelf_file}')
         sx, sy = np.loadtxt(shelf_file, unpack=True)
         path = Path(np.column_stack((sx, sy)))
         points = np.column_stack((self.X.ravel(), self.Y.ravel()))
-        self.in_mask = path.contains_points(points, radius=-1.0)
+        self.in_mask = path.contains_points(points)
 
         # Mask points
         self.X_pts = self.X.ravel()
