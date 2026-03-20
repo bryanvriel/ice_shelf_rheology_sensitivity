@@ -407,6 +407,7 @@ def make_geom_digest(cfg: DictToStruct, ignore=["use_ref",]) -> str:
     mat_cfg = cfg.matrix.todict()
     for key in ignore:
         del mat_cfg[key]
+    mat_cfg['mesh'] = cfg.inverse.meshfile # matrix tied to mesh as well
     digest = _short_hash({"matrix": mat_cfg}, digest_bytes=4)
     return digest
 
