@@ -104,7 +104,7 @@ def main(cfg, args):
     Nt = problem.Nt
         
     # Inverse filename
-    outfile = fu.make_results_filename(cfg)
+    outfile = args.output or fu.make_results_filename(cfg)
 
     # Get restore stage
     if args.restore_stage is not None:
