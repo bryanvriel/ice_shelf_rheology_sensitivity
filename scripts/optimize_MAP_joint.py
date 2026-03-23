@@ -2,20 +2,12 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
-from tqdm import tqdm
-import matplotlib.pyplot as plt
 import argparse
 import h5py
-import sys
-import os
-
-import jbao
 
 import schurflow.train_utilities as tu
 import schurflow.file_utilities as fu
-from schurflow.utilities import *
-
-import optax
+import schurflow.workflow_utils as wu
 
 
 def parse():
@@ -28,61 +20,45 @@ def parse():
 
 
 def main(cfg, args):
-
-    outdir = cfg.output_dir
-    data_file = fu.data_filename(cfg, args)
-    print("Data file:", data_file)
-
-    # Update hyperparameters from calibration
-    if args.cal or args.disc:
-        cal = jbao.utils.parse_toml("calibration.toml").todict()[cfg.output_dir]
-        if args.cal:
-            cfg = cfg.update("inverse.hyper_params", cal["calibration_hyper_params"])
-        else:
-            cfg = cfg.update("inverse.hyper_params", cal["discovery_hyper_params"])
-
-    # Create objects
-    field, problem, objective, converter = tu.initialize_objects(
-        cfg, data_file,
-    )
-
-    # Output filename
-    outfile = args.output or fu.make_results_filename(cfg)
-    print("Output file:", outfile)
+    ctx = wu.initialize_workflow(cfg, args)
+    print("Data file:", ctx.data_file)
+    print("Output file:", ctx.outfile)
 
     # Restore from previous
     if args.restore:
-        with h5py.File(outfile, "r") as fid:
-            z = fid[f"stage{args.restore_stage}/z"][()]
+        restore_stage, restore_group = wu.resolve_restore_stage(
+            ctx.outfile,
+            args.restore_stage,
+            default_to_latest=True,
+        )
+        with h5py.File(ctx.outfile, "r") as fid:
+            z = fid[f"{restore_group}/z"][()]
+        stage = restore_stage + 1
+        file_mode = "a"
     else:
-        rng = np.random.default_rng(cfg.inverse.opt_init_seed)
-        z = cfg.inverse.opt_init_amp * rng.standard_normal((field.N,))
+        rng = np.random.default_rng(ctx.cfg.inverse.opt_init_seed)
+        z = ctx.cfg.inverse.opt_init_amp * rng.standard_normal((ctx.field.N,))
+        stage = 1
+        file_mode = "w"
     print("Number of parameters:", z.size)
 
     # Create optimizer
-    if cfg.inverse.opt_type != 'bfgs':
-        lr = tu.create_lr_schedule(cfg.inverse.lr_schedule, cfg.inverse.lr)
-        opt, opt_state = tu.init_optimizer(cfg.inverse.opt_type, z, lr)
-        print("Optimizer:", cfg.inverse.opt_type)
+    if ctx.cfg.inverse.opt_type != "bfgs":
+        lr = tu.create_lr_schedule(ctx.cfg.inverse.lr_schedule, ctx.cfg.inverse.lr)
+        opt, opt_state = tu.init_optimizer(ctx.cfg.inverse.opt_type, z, lr)
+        print("Optimizer:", ctx.cfg.inverse.opt_type)
 
     # Attempt to restore optimizer state from previous stage
-    if args.restore and cfg.inverse.opt_type != 'bfgs':
+    if args.restore and ctx.cfg.inverse.opt_type != "bfgs":
         try:
-            test_opt_state, opt_type = fu.load_state_from_group(
+            test_opt_state, _ = fu.load_state_from_group(
                 opt_state,
-                outfile,
-                f"stage{args.restore_stage}/optimizer",
+                ctx.outfile,
+                f"{restore_group}/optimizer",
             )
             opt_state = test_opt_state
         except ValueError:
             print("Previous optimizer state is inconsistent. Not restoring state.")
-
-    if args.restore:
-        stage = args.restore_stage + 1
-        file_mode = "a"
-    else:
-        stage = 1
-        file_mode = "w"
     print("Optimizing for stage", stage)
 
     def callback(i, z, opt_state, losses, grad_val):
@@ -98,15 +74,15 @@ def main(cfg, args):
             # Generate predictions
             preds = tu.generate_predictions(
                 z,
-                field,
-                problem,
-                objective,
-                converter,
+                ctx.field,
+                ctx.problem,
+                ctx.objective,
+                ctx.converter,
             )
 
             # Write parameters and losses to file
             fu.write_results_to_file(
-                outfile,
+                ctx.outfile,
                 preds,
                 group=f"stage{stage}",
                 mode=file_mode,
@@ -116,29 +92,29 @@ def main(cfg, args):
             # Also write optimizer state
             fu.save_state_to_group(
                 opt_state,
-                cfg.inverse.opt_type,
-                outfile,
+                ctx.cfg.inverse.opt_type,
+                ctx.outfile,
                 f"stage{stage}/optimizer",
                 verbose=False,
             )
 
-    if cfg.inverse.opt_type == 'bfgs':
+    if ctx.cfg.inverse.opt_type == "bfgs":
         z, opt_state, losses = tu.optimize_bfgs(
-            objective,
+            ctx.objective,
             z,
-            factr=cfg.inverse.bfgs_factr,
-            maxcor=cfg.inverse.bfgs_maxcor,
+            factr=ctx.cfg.inverse.bfgs_factr,
+            maxcor=ctx.cfg.inverse.bfgs_maxcor,
             method="L-BFGS-B",
             maxiter=1000,
         )
 
     else:
         z, opt_state, losses = tu.optimize_sgd(
-            objective,
+            ctx.objective,
             z,
             opt,
             opt_state,
-            cfg.inverse.n_iter,
+            ctx.cfg.inverse.n_iter,
             callback=callback,
         )
 
@@ -148,8 +124,7 @@ def main(cfg, args):
 
 if __name__ == "__main__":
     args, extra_args = parse()
-    cfg = jbao.utils.parse_toml(args.cfg, default="default_config.toml")
-    cfg = jbao.utils.update_cfg_with_extra(cfg, extra_args)
+    cfg = wu.load_config(args, extra_args)
     main(cfg, args)
 
 # end of file

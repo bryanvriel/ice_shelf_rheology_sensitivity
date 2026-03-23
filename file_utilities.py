@@ -11,6 +11,7 @@ import sys
 import jax
 import re
 import os
+import warnings
 
 from jbao.utils import DictToStruct
 from typing import Any, Dict, Tuple
@@ -71,33 +72,16 @@ def common_parse() -> argparse.ArgumentParser:
 
 
 def generate_filename(cfg, loc, amp):
-
-    # Step 1: Short codes for bools and optimizer
-    pre = "p" if cfg.inverse.precondition else "np"
-    joint = "j" if cfg.inverse.joint else "nj"
-
-    # Step 2: Compact penalty string
-    penalties = cfg.inverse.penalties_n
-    penalties_str = "-".join(
-        f"{int(p) if p.is_integer() else p:.2g}".replace(".0", "") for p in penalties
+    warnings.warn(
+        "generate_filename() is deprecated; use make_results_filename().",
+        DeprecationWarning,
+        stacklevel=2,
     )
-
-    # Step 3: Compact nll scale string
-    scale_str = str(int(cfg.inverse.nll_scale))
-
-    # Location and amplitude of perturbation
-    loc_dict = {"terminus": "t", "GL": "gl"}
-    loc_amp = f"l{loc_dict[loc]}_a{amp[0]}"
-
-    # Step 4: type of function
-    if cfg.matrix.spectral:
-        ftype = "spec"
+    if amp == "None":
+        data_label = "data_inverse"
     else:
-        ftype = "wav"
-
-    # Final: Combine all into filename
-    filename = f"r_{ftype}_{loc_amp}_{pre}_{joint}_p{penalties_str}_s{scale_str}.h5"
-    return os.path.join(cfg.output_dir, filename)
+        data_label = f"data_inverse_perturbed_{loc}_amp-{amp}"
+    return make_results_filename(cfg, data_label=data_label)
 
 
 def data_filename(cfg, args):
@@ -282,16 +266,24 @@ def load_state_from_group(template_state, filepath: str, group_name: str, verbos
     return loaded_state, opt_type
 
 
+_STAGE_KEY_PATTERN = re.compile(r"^stage(\d+)$")
+
+
+def get_stage_number(stage_name: str) -> int:
+    match = _STAGE_KEY_PATTERN.fullmatch(stage_name)
+    if match is None:
+        raise ValueError(f"Invalid stage name '{stage_name}'. Expected format 'stage<N>'.")
+    return int(match.group(1))
+
+
 def get_latest_stage(filepath):
 
     with h5py.File(filepath, "r") as fid:
-        stage_keys = []
-        for key in fid.keys():
-            if key.startswith("stage"):
-                stage_keys.append(key)
+        stage_keys = [key for key in fid.keys() if _STAGE_KEY_PATTERN.fullmatch(key)]
 
-    stage_keys = sorted(stage_keys)
-    return stage_keys[-1]
+    if not stage_keys:
+        raise ValueError(f"No stage groups found in {filepath}")
+    return max(stage_keys, key=get_stage_number)
 
 
 def print_file_last_modified(filepath):
@@ -371,27 +363,42 @@ def _sanitize_filename(s: str) -> str:
     return s
 
 
+def _resolve_data_source(data_file=None, data_label=None) -> str | None:
+    if data_label is not None:
+        return data_label
+    if data_file is None:
+        return None
+    return os.path.splitext(os.path.basename(data_file))[0]
+
+
 # -------------------------
 # Public API
 # -------------------------
 
 
 def make_data_digest(
-    cfg: DictToStruct, ignore=["v_sigma", "amp", "loc"],
+    cfg: DictToStruct,
+    ignore=("v_sigma",),
+    *,
+    data_file=None,
+    data_label=None,
 ) -> str:
     data_cfg = cfg.data.todict()
     for key in ignore:
-        del data_cfg[key]
+        data_cfg.pop(key, None)
+    data_source = _resolve_data_source(data_file=data_file, data_label=data_label)
+    if data_source is not None:
+        data_cfg["source"] = data_source
     digest = _short_hash({"data": data_cfg}, digest_bytes=4)
     return digest
 
 
 def make_inverse_digest(
-    cfg: DictToStruct, ignore=["n_iter", "lr_schedule", "lr", "objective_scale"],
+    cfg: DictToStruct, ignore=("n_iter", "lr_schedule", "lr", "objective_scale"),
 ) -> str:
     inverse_cfg = cfg.inverse.todict()
     for key in ignore:
-        del inverse_cfg[key]
+        inverse_cfg.pop(key, None)
 
     digest = _short_hash(
         {
@@ -403,10 +410,10 @@ def make_inverse_digest(
     return digest
 
 
-def make_geom_digest(cfg: DictToStruct, ignore=["use_ref",]) -> str:
+def make_geom_digest(cfg: DictToStruct, ignore=("use_ref",)) -> str:
     mat_cfg = cfg.matrix.todict()
     for key in ignore:
-        del mat_cfg[key]
+        mat_cfg.pop(key, None)
     mat_cfg['mesh'] = cfg.inverse.meshfile # matrix tied to mesh as well
     digest = _short_hash({"matrix": mat_cfg}, digest_bytes=4)
     return digest
@@ -427,6 +434,8 @@ def make_results_filename(
     prefix: str = "r",
     ext: str = "h5",
     max_slug_chars: int = 140,
+    data_file=None,
+    data_label=None,
 ) -> str:
     """
     Create a unique, human-readable results filename from {data,inverse} configs.
@@ -437,10 +446,11 @@ def make_results_filename(
     data_cfg = cfg.data.todict()
     inverse_cfg = cfg.inverse.todict()
     outdir = cfg.output_dir
+    data_source = _resolve_data_source(data_file=data_file, data_label=data_label)
 
     # Build human-readable tokens from simple top-level scalars (sorted by key)
     items = {
-        "d": ["u_sigma", "amp", "loc"],
+        "d": ["u_sigma"],
         "inv": [
             "B_norm_type",
         ],
@@ -451,6 +461,8 @@ def make_results_filename(
             v = _cfg[k]
             if _is_simple_scalar(v):
                 tokens.append(f"{sect_tag}.{k}={_fmt_simple(v)}")
+    if data_source is not None:
+        tokens.append(f"d.source={data_source}")
 
     # Add a token for spectral matrix
     if cfg.matrix.spectral:
@@ -462,7 +474,11 @@ def make_results_filename(
         slug = slug[:max_slug_chars].rstrip("_-")
 
     # Stable short hashes over the full canonicalized configs
-    data_digest = make_data_digest(cfg)
+    data_digest = make_data_digest(
+        cfg,
+        data_file=data_file,
+        data_label=data_label,
+    )
     geom_digest = make_geom_digest(cfg)
     inv_digest = make_inverse_digest(cfg)
 

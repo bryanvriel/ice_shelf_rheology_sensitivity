@@ -2,23 +2,15 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
-from tqdm import tqdm
 import matplotlib.pyplot as plt
-from functools import partial
-import warnings
 import argparse
 import h5py
 import sys
-import os
 
-import jbao
-
-import schurflow.train_utilities as tu
 import schurflow.file_utilities as fu
-import schurflow.models as models
-from schurflow.utilities import *
+import schurflow.workflow_utils as wu
+import firedrake
 from mpi4py import MPI
-import cryogen
 
 
 def parse():
@@ -83,69 +75,57 @@ def main(cfg, args):
         sys.stdout.flush()
         comm.Barrier()
     
-    outdir = cfg.output_dir
-    data_file = fu.data_filename(cfg, args)
-
-    # Update hyperparameters from calibration
-    if args.cal or args.disc:
-        cal = jbao.utils.parse_toml("calibration.toml").todict()[cfg.output_dir]
-        if args.cal:
-            cfg = cfg.update("inverse.hyper_params", cal["calibration_hyper_params"])
-        else:
-            cfg = cfg.update("inverse.hyper_params", cal["discovery_hyper_params"])
-
-    # Create objects
-    field, problem, objective, converter = tu.initialize_objects(
+    ctx = wu.initialize_workflow(
         cfg,
-        data_file,
+        args,
         comm=ensemble.comm,
         data_obj=args.data_obj,
     )
-    Nt = problem.Nt
-        
-    # Inverse filename
-    outfile = args.output or fu.make_results_filename(cfg)
+    Nt = ctx.problem.Nt
+
+    mpi_print("Data file:", ctx.data_file)
+    mpi_print("Output file:", ctx.outfile)
 
     # Get restore stage
-    if args.restore_stage is not None:
-        restore_stage = f"stage{args.restore_stage}"
-    else:
-        restore_stage = fu.get_latest_stage(outfile)
+    _, restore_stage = wu.resolve_restore_stage(
+        ctx.outfile,
+        args.restore_stage,
+        default_to_latest=True,
+    )
 
     # Load MAP
-    mpi_print(f'Restoring {restore_stage} from {outfile}')
-    with h5py.File(outfile, "r") as fid:
+    mpi_print(f"Restoring {restore_stage} from {ctx.outfile}")
+    with h5py.File(ctx.outfile, "r") as fid:
         θ_map = fid[f"{restore_stage}/z"][()]
-        Np = θ_map.size
 
     # Gradient test
-    _, grad = objective(θ_map)
+    _, grad = ctx.objective(θ_map)
     grad_norm = np.linalg.norm(grad)
-    mpi_print('Gradient norm at MAP:', grad_norm)
-    
+    mpi_print("Gradient norm at MAP:", grad_norm)
+
+    hessian_group = "data_hessian" if args.data_obj else "hessian"
+
     # Read (un-regularized) Hessian or compute it
     if args.read_hessian:
-        with h5py.File(outfile, "r") as fid:
+        with h5py.File(ctx.outfile, "r") as fid:
             group = fid[f"{restore_stage}"]
-            H = group["hessian"][()]
+            H = group[hessian_group][()]
     else:
-        H = compute_hessian(objective, θ_map, comm, rank)
+        H = compute_hessian(ctx.objective, θ_map, comm, rank)
         if rank == 0:
-            out_group = "data_hessian" if args.data_obj else "hessian"
-            with h5py.File(outfile, "a") as fid:
+            with h5py.File(ctx.outfile, "a") as fid:
                 group = fid[f"{restore_stage}"]
-                if out_group in group.keys():
-                    del group[out_group]
-                group[out_group] = H
+                if hessian_group in group.keys():
+                    del group[hessian_group]
+                group[hessian_group] = H
 
     if args.compute_only:
         comm.Barrier()
         sys.exit()
 
     # Regularization
-    mpi_print(f'Regularization factor: {cfg.vi.hess_reg}')
-    H = H + cfg.vi.hess_reg * np.eye(H.shape[0])
-    cov = np.linalg.inv(H)
+    mpi_print(f"Regularization factor: {ctx.cfg.vi.hess_reg}")
+    H = H + ctx.cfg.vi.hess_reg * np.eye(H.shape[0])
 
     # Compute eigenvalues 
     evals, evecs = np.linalg.eigh(H)
@@ -155,9 +135,9 @@ def main(cfg, args):
     if args.plot:
         if rank == 0:
             plt.plot(evals)
-            plt.xlabel('Eigenvalue index')
-            plt.ylabel('Eigenvalue amplitude')
-            plt.axhline(0.0, color='k')
+            plt.xlabel("Eigenvalue index")
+            plt.ylabel("Eigenvalue amplitude")
+            plt.axhline(0.0, color="k")
             plt.show()
 
             print(evecs.shape)
@@ -174,69 +154,69 @@ def main(cfg, args):
         k1 = k0 + procN
     procN = k1 - k0
 
-    mpi_print(f'Updating {outfile}')
+    mpi_print(f"Updating {ctx.outfile}")
         
-    with h5py.File(outfile, "a", driver="mpio", comm=comm) as fid:
+    with h5py.File(ctx.outfile, "a", driver="mpio", comm=comm) as fid:
 
         root_group = fid[f"{restore_stage}"]
 
-        hgroup = f"hessian_samples"
+        hgroup = "hessian_samples"
         if hgroup in root_group.keys():
             del root_group[hgroup]
         group = root_group.create_group(hgroup)
-        group['reg'] = cfg.vi.hess_reg
+        group["reg"] = ctx.cfg.vi.hess_reg
 
         def _make_ds(name, shape=None):
             if shape is None:
-                if 'u' in name or 'v' in name:
-                    shape = (n_samples, Nt, *converter.out_shape)
+                if "u" in name or "v" in name:
+                    shape = (n_samples, Nt, *ctx.converter.out_shape)
                 else:
-                    shape = (n_samples, *converter.out_shape)
-            ds = group.create_dataset(name, shape, 'f')
+                    shape = (n_samples, *ctx.converter.out_shape)
+            ds = group.create_dataset(name, shape, "f")
             return ds
 
-        B_out = _make_ds('B_samples')
-        n_out = _make_ds('n_samples')
-        u_out = _make_ds('u_samples')
-        v_out = _make_ds('v_samples')
-        z_out = _make_ds('z_samples', shape=(n_samples, field.N))
-        logp_out = group.create_dataset('logp', (n_samples,), 'd')
-        group['x'] = converter.x_out
-        group['y'] = converter.y_out
+        B_out = _make_ds("B_samples")
+        n_out = _make_ds("n_samples")
+        u_out = _make_ds("u_samples")
+        v_out = _make_ds("v_samples")
+        z_out = _make_ds("z_samples", shape=(n_samples, ctx.field.N))
+        logp_out = group.create_dataset("logp", (n_samples,), "d")
+        group["x"] = ctx.converter.x_out
+        group["y"] = ctx.converter.y_out
 
         for i, k in enumerate(range(k0, k1)):
 
             # Generate a sample and update controls with sample
             sample = laplace_low_rank_sampler(θ_map, evals, evecs, seed=k)
-            θ_np = field(sample.squeeze())
-            objective.controls = θ_np
+            θ_np = ctx.field(sample.squeeze())
+            ctx.objective.controls = θ_np
 
             # Evaluate log probability
-            nll = objective.loss(sample.squeeze())
+            nll = ctx.objective.loss(sample.squeeze())
             logp_out[k] = -1 * nll
 
             # Run forward model
-            problem.reset_solver()
-            preds = problem.forward(objective.controls)
-            u_pred = np.zeros((Nt, *converter.out_shape), dtype='f')
-            v_pred = np.zeros((Nt, *converter.out_shape), dtype='f')
+            ctx.problem.reset_solver()
+            preds = ctx.problem.forward(ctx.objective.controls)
+            u_pred = np.zeros((Nt, *ctx.converter.out_shape), dtype="f")
+            v_pred = np.zeros((Nt, *ctx.converter.out_shape), dtype="f")
             for j in range(Nt):
-                up = converter(preds[j])
+                up = ctx.converter(preds[j])
                 u_pred[j] = up[0]
                 v_pred[j] = up[1]
 
             # Unpack control fields
-            if problem.fixed_exponent:
-                θ_B = objective.controls
-                θ_n = problem.θ_n
+            if ctx.problem.fixed_exponent:
+                θ_B = ctx.objective.controls
+                θ_n = ctx.problem.θ_n
             else: 
-                θ_B, θ_n = objective.controls
+                θ_B, θ_n = ctx.objective.controls
 
             # Un-normalize and convert to array
-            B = problem._inv_norm_B(θ_B)
-            n = problem._inv_norm_n(θ_n)
-            B = converter(firedrake.assemble(firedrake.interpolate(B, problem.Q)))
-            n = converter(firedrake.assemble(firedrake.interpolate(n, problem.Q)))
+            B = ctx.problem._inv_norm_B(θ_B)
+            n = ctx.problem._inv_norm_n(θ_n)
+            B = ctx.converter(firedrake.assemble(firedrake.interpolate(B, ctx.problem.Q)))
+            n = ctx.converter(firedrake.assemble(firedrake.interpolate(n, ctx.problem.Q)))
 
             # Save to file
             B_out[k, ...] = B
@@ -311,6 +291,7 @@ def compute_hessian(objective, θ_map, comm, rank, method="ad"):
  
 if __name__ == "__main__":
     args, extra_args = parse()
-    main(args, extra_args)
+    cfg = wu.load_config(args, extra_args)
+    main(cfg, args)
 
 # end of file
