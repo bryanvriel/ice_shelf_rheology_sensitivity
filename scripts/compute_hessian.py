@@ -190,7 +190,8 @@ def main(cfg, args):
             # Generate a sample and update controls with sample
             sample = laplace_low_rank_sampler(θ_map, evals, evecs, seed=k)
             θ_np = ctx.field(sample.squeeze())
-            ctx.objective.controls = θ_np
+            ctx.objective.set_control_array(θ_np)
+            controls = ctx.objective.copy_controls()
 
             # Evaluate log probability
             nll = ctx.objective.loss(sample.squeeze())
@@ -198,7 +199,7 @@ def main(cfg, args):
 
             # Run forward model
             ctx.problem.reset_solver()
-            preds = ctx.problem.forward(ctx.objective.controls)
+            preds = ctx.problem.forward(controls)
             u_pred = np.zeros((Nt, *ctx.converter.out_shape), dtype="f")
             v_pred = np.zeros((Nt, *ctx.converter.out_shape), dtype="f")
             for j in range(Nt):
@@ -208,10 +209,10 @@ def main(cfg, args):
 
             # Unpack control fields
             if ctx.problem.fixed_exponent:
-                θ_B = ctx.objective.controls
+                θ_B = controls[0]
                 θ_n = ctx.problem.θ_n
             else: 
-                θ_B, θ_n = ctx.objective.controls
+                θ_B, θ_n = controls
 
             # Un-normalize and convert to array
             B = ctx.problem._inv_norm_B(θ_B)

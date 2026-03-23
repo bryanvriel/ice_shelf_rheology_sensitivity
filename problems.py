@@ -2,39 +2,37 @@
 
 from functools import partial
 import numpy as np
-from scipy.spatial import cKDTree
 import h5py
 import os
 from typing import Optional, Tuple
 
 import firedrake
-from firedrake import inner, assemble
+from firedrake import assemble
 import icepack
-from icepack.calculus import grad
 import rasterio
 
-
-import cryogen
 from cryogen import interpolate
 
 from . import models
-from .utilities import coordinate_values, const_to_R_fn
+from .utilities import coordinate_values
 
 
 def make_mesh(meshfile=None, comm=None, mesh_span=None, mesh_spacing=None):
+    if meshfile:
+        if comm is not None:
+            return firedrake.Mesh(meshfile, comm=comm)
+        return firedrake.Mesh(meshfile)
+
+    if mesh_span is None or mesh_spacing is None:
+        raise ValueError(
+            "make_mesh() requires either `meshfile` or both `mesh_span` and "
+            "`mesh_spacing`."
+        )
+
+    N = int(mesh_span / mesh_spacing)
     if comm is not None:
-        if meshfile:
-            mesh = firedrake.Mesh(meshfile, comm=comm)
-        else:
-            N = int(cfg.model.mesh_span / cfg.model.mesh_spacing)
-            mesh = firedrake.IntervalMesh(N, cfg.model.mesh_span, comm=comm)
-    else:
-        if meshfile:
-            mesh = firedrake.Mesh(meshfile)
-        else:
-            N = int(cfg.model.mesh_span / cfg.model.mesh_spacing)
-            mesh = firedrake.IntervalMesh(N, cfg.model.mesh_span)
-    return mesh
+        return firedrake.IntervalMesh(N, mesh_span, comm=comm)
+    return firedrake.IntervalMesh(N, mesh_span)
 
 
 class IceShelfProblem:
@@ -43,10 +41,8 @@ class IceShelfProblem:
         self,
         cfg,
         mesh,
-        dirichlet_ids=[
-            1,
-        ],
-        side_wall_ids=[],
+        dirichlet_ids=None,
+        side_wall_ids=None,
         degree=2,
         side_friction=0.0,
         nll_scale=1.0,
@@ -87,6 +83,8 @@ class IceShelfProblem:
         # Mesh metadata for assembling
         quad_degree = 3 * (degree - 1) + 2 * degree
         self.mesh_metadata = {"quadrature_degree": quad_degree}
+        dirichlet_ids = [1] if dirichlet_ids is None else list(dirichlet_ids)
+        side_wall_ids = [] if side_wall_ids is None else list(side_wall_ids)
         self._dirichlet_ids = dirichlet_ids
         self._side_wall_ids = side_wall_ids
 
@@ -119,20 +117,9 @@ class IceShelfProblem:
         self.θ_B = firedrake.Function(self.Q)
         self.θ_n = firedrake.Function(self.Q)
 
-        # Set the NLL function, depending on whether we want temporal covariance
         self.temporal_cov = temporal_cov
-        if temporal_cov:
-            self.data_nll = self._data_nll_covariance
-        else:
-            self.data_nll = self._data_nll
 
-        # List of control variables
-        # Not used here, but as an interface to FiredrakeObjective
         self.fixed_exponent = fixed_exponent
-        if fixed_exponent:
-            self.forward = self._forward_rigidity
-        else:
-            self.forward = self._forward
 
         self._obs_init = False
         self._solver_init = False
@@ -140,9 +127,8 @@ class IceShelfProblem:
     @property
     def controls(self):
         if self.fixed_exponent:
-            return [self.θ_B,]
-        else:
-            return [self.θ_B, self.θ_n]
+            return (self.θ_B,)
+        return (self.θ_B, self.θ_n)
 
     @controls.setter
     def controls(self, value):
@@ -182,6 +168,12 @@ class IceShelfProblem:
         time_ind:
             List of time indices to load. If ``None``, all epochs are used.
         """
+        self.u = []
+        self.σ_u = []
+        self.e_xx = []
+        self.e_xy = []
+        self.e_yy = []
+
         with h5py.File(data_file, "r") as fid:
             h, u, e_ref = [fid[key][()] for key in ('h', 'u', 'eps_ref')]
             grid_coords = (fid["x"][()], fid["y"][()])
@@ -360,8 +352,24 @@ class IceShelfProblem:
             self._inv_norm_B, self._fwd_norm_B = create_fn(B_norm, "B")
             self._inv_norm_n, self._fwd_norm_n = create_fn(n_norm, "n")
 
+    def _check_forward_ready(self):
+        if not self._obs_init:
+            raise RuntimeError("Observations must be loaded before running the forward model.")
+        if not self._solver_init:
+            raise RuntimeError("Solvers must be initialized before running the forward model.")
 
-    def _forward(self, params):
+    def forward(self, params):
+        self._check_forward_ready()
+        if self.fixed_exponent:
+            return self._forward_fixed_exponent(params)
+        return self._forward_joint(params)
+
+    def data_nll(self, u_pred):
+        if self.temporal_cov:
+            return self._data_nll_covariance(u_pred)
+        return self._data_nll_independent(u_pred)
+
+    def _forward_joint(self, params):
 
         # Unpack and un-normalize parameters
         θ_B, θ_n = params
@@ -382,7 +390,7 @@ class IceShelfProblem:
 
         return u_pred
 
-    def _forward_rigidity(self, params):
+    def _forward_fixed_exponent(self, params):
         θ_B = params[0]
         B = assemble(firedrake.interpolate(self._inv_norm_B(θ_B), self.Q))
         n_exp = assemble(firedrake.interpolate(self._inv_norm_n(self.θ_n), self.Q))
@@ -401,39 +409,7 @@ class IceShelfProblem:
 
         return u_pred
 
-    def _forward_strain(self, params):
-
-        θ_B, θ_n = params
-
-        # Solve for velocities
-        u0 = self.solver.diagnostic_solve(
-            velocity=self.u0,
-            thickness=self.h,
-            norm_rigidity=θ_B,
-            norm_exponent=θ_n,
-        )
-        u1 = self.solver.diagnostic_solve(
-            velocity=self.u1,
-            thickness=self.h,
-            norm_rigidity=θ_B,
-            norm_exponent=θ_n,
-        )
-
-        # Compute strain rate tensors
-        ε_0 = sym_grad(u0)
-        ε_1 = sym_grad(u1)
-
-        # Extract strain rate components
-        e0_xx = firedrake.project(ε_0[0, 0], Q)
-        e0_xy = firedrake.project(ε_0[0, 1], Q)
-        e0_yy = firedrake.project(ε_0[1, 1], Q)
-        e1_xx = firedrake.project(ε_1[0, 0], Q)
-        e1_xy = firedrake.project(ε_1[0, 1], Q)
-        e1_yy = firedrake.project(ε_1[1, 1], Q)
-
-        return [u0, u1, e0_xx, e0_xy, e0_yy, e1_xx, e1_xy, e1_yy]
-
-    def _data_nll(self, u_pred):
+    def _data_nll_independent(self, u_pred):
         misfits = []
         for k in range(self.Nt):
             du = u_pred[k] - self.u[k]
@@ -469,40 +445,6 @@ class IceShelfProblem:
                 integrand += cij * (rx[i] * rx[j] + ry[i] * ry[j])
 
         return 0.5 * self.nll_scale * integrand * firedrake.dx
-
-    def data_strain_nll(self, predictions):
-
-        # u0, u1 = pred_list
-        u0, u1, e0_xx, e0_xy, e0_yy, e1_xx, e1_xy, e1_yy = predictions
-
-        δu0 = u0 - self.u0
-        δu1 = u1 - self.u1
-
-        δe0_xx = e0_xx - self.e0_xx
-        δe0_yy = e0_yy - self.e0_yy
-        δe0_xy = e0_xy - self.e0_xy
-
-        δe1_xx = e1_xx - self.e1_xx
-        δe1_yy = e1_yy - self.e1_yy
-        δe1_xy = e1_xy - self.e1_xy
-
-        return (
-            0.5
-            / self.area
-            * (
-                (δu0[0] / self.σ_vel) ** 2
-                + (δu0[1] / self.σ_vel) ** 2
-                + (δu1[0] / self.σ_vel) ** 2
-                + (δu1[1] / self.σ_vel) ** 2
-                + (δe0_xx / self.σ_eps) ** 2
-                + (δe0_yy / self.σ_eps) ** 2
-                + (δe0_xy / self.σ_eps) ** 2
-                + (δe1_xx / self.σ_eps) ** 2
-                + (δe1_yy / self.σ_eps) ** 2
-                + (δe1_xy / self.σ_eps) ** 2
-            )
-            * firedrake.dx
-        )
 
     def reset_solver(self):
         for k in range(self.Nt):

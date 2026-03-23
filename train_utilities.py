@@ -476,13 +476,14 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
         assert z is None and θ_np is not None
         z = θ_np
 
-    objective.controls = θ_np
+    objective.set_control_array(θ_np)
+    controls = objective.copy_controls()
     if problem.fixed_exponent:
-        θ_B = objective.controls[0]
+        θ_B = controls[0]
         θ_n = problem.θ_n
     else:
-        θ_B, θ_n = objective.controls
-    preds = problem.forward(objective.controls)
+        θ_B, θ_n = controls
+    preds = problem.forward(controls)
 
     # Output coordinates
     Ny_out, Nx_out = converter.out_shape
