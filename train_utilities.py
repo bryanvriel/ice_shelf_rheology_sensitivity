@@ -463,18 +463,17 @@ def unpack_hess_inv(result):
 
 
 def generate_predictions(z, field, problem, objective, converter, θ_np=None):
+    if z is None:
+        raise ValueError("generate_predictions() requires latent parameters `z`.")
 
     problem.reset_solver()
 
+    # Unpack to controls
+    if θ_np is None:
+        θ_np = field(z)
+
     # Get loss function
     loss = objective.loss(z)
-
-    # Unpack to controls
-    if z is not None and θ_np is None:
-        θ_np = field(z)
-    else:
-        assert z is None and θ_np is not None
-        z = θ_np
 
     objective.set_control_array(θ_np)
     controls = objective.copy_controls()
@@ -506,6 +505,16 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
         out_preds[f"u{i}"] = converter(p)
 
     return out_preds
+
+
+def velocity_components_from_predictions(preds, n_steps):
+    u0, v0 = preds["u0"]
+    shape = (n_steps, *u0.shape)
+    u_pred = np.zeros(shape, dtype=np.asarray(u0).dtype)
+    v_pred = np.zeros(shape, dtype=np.asarray(v0).dtype)
+    for i in range(n_steps):
+        u_pred[i], v_pred[i] = preds[f"u{i}"]
+    return u_pred, v_pred
 
 
 # end of file

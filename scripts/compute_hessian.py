@@ -8,6 +8,7 @@ import h5py
 import sys
 
 import schurflow.file_utilities as fu
+import schurflow.train_utilities as tu
 import schurflow.workflow_utils as wu
 import firedrake
 from mpi4py import MPI
@@ -146,6 +147,8 @@ def main(cfg, args):
         comm.Barrier()
         sys.exit()
 
+    sampler = build_laplace_sampler(evals, evecs)
+
     n_samples = args.n_samples
     procN = n_samples // n_proc
     k0 = rank * procN
@@ -187,59 +190,41 @@ def main(cfg, args):
 
         for i, k in enumerate(range(k0, k1)):
 
-            # Generate a sample and update controls with sample
-            sample = laplace_low_rank_sampler(θ_map, evals, evecs, seed=k)
-            θ_np = ctx.field(sample.squeeze())
-            ctx.objective.set_control_array(θ_np)
-            controls = ctx.objective.copy_controls()
-
-            # Evaluate log probability
-            nll = ctx.objective.loss(sample.squeeze())
-            logp_out[k] = -1 * nll
-
-            # Run forward model
-            ctx.problem.reset_solver()
-            preds = ctx.problem.forward(controls)
-            u_pred = np.zeros((Nt, *ctx.converter.out_shape), dtype="f")
-            v_pred = np.zeros((Nt, *ctx.converter.out_shape), dtype="f")
-            for j in range(Nt):
-                up = ctx.converter(preds[j])
-                u_pred[j] = up[0]
-                v_pred[j] = up[1]
-
-            # Unpack control fields
-            if ctx.problem.fixed_exponent:
-                θ_B = controls[0]
-                θ_n = ctx.problem.θ_n
-            else: 
-                θ_B, θ_n = controls
-
-            # Un-normalize and convert to array
-            B = ctx.problem._inv_norm_B(θ_B)
-            n = ctx.problem._inv_norm_n(θ_n)
-            B = ctx.converter(firedrake.assemble(firedrake.interpolate(B, ctx.problem.Q)))
-            n = ctx.converter(firedrake.assemble(firedrake.interpolate(n, ctx.problem.Q)))
+            sample = draw_laplace_sample(θ_map, sampler, seed=k)
+            preds = tu.generate_predictions(
+                sample.squeeze(),
+                ctx.field,
+                ctx.problem,
+                ctx.objective,
+                ctx.converter,
+            )
+            u_pred, v_pred = tu.velocity_components_from_predictions(preds, Nt)
 
             # Save to file
-            B_out[k, ...] = B
-            n_out[k, ...] = n
+            B_out[k, ...] = preds["B"]
+            n_out[k, ...] = preds["n"]
             u_out[k, ...] = u_pred
             v_out[k, ...] = v_pred
             z_out[k, ...] = sample
+            logp_out[k] = -1 * preds["final_loss"]
 
             if rank == 0 and i % 5 == 0:
                 print(f"Sample {i:3d} / {procN}")
                 sys.stdout.flush()
 
 
-def laplace_low_rank_sampler(x_map, evals, evecs, seed=None):
-    # draw in the reduced m-space
-    m = evals.shape[0]
+def build_laplace_sampler(evals, evecs):
+    if np.any(evals <= 0.0):
+        raise ValueError(
+            "Regularized Hessian must be positive definite before Laplace sampling."
+        )
+    return evecs / np.sqrt(evals)[None, :]
+
+
+def draw_laplace_sample(x_map, sampler, seed=None):
     rng = np.random.default_rng(seed)
-    Z = rng.standard_normal((m,))
-    # scale by 1/sqrt(evals)
-    scaled = evecs / np.sqrt(evals)[None,:]
-    return x_map + scaled.dot(Z)
+    Z = rng.standard_normal((sampler.shape[1],))
+    return x_map + sampler.dot(Z)
 
 
 def compute_hessian(objective, θ_map, comm, rank, method="ad"):

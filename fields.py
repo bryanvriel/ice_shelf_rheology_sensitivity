@@ -1,7 +1,7 @@
 #-*- coding: utf-8 -*-
 
 import numpy as np
-from scipy.linalg import solve_triangular, block_diag
+from scipy.linalg import solve_triangular
 import h5py
 
 import jax
@@ -94,7 +94,10 @@ def create_rheology_field(cfg, hyper_params=None):
         hyper_params = cfg.inverse.hyper_params
 
     if cfg.matrix.spectral:
-        matfile = threshold_spectral_matrix(cfg.matrix.spectral_L_min)
+        raise NotImplementedError(
+            "matrix.spectral is not part of the current golden path. "
+            "Generate the standard matrix file instead."
+        )
     else:
         matfile = make_matrix_filename(cfg)
 
@@ -140,17 +143,12 @@ def create_rheology_field(cfg, hyper_params=None):
 
 
 def precondition_matrix(G, S):
+    G_np = np.asarray(G, dtype=float)
+    S_np = make_spd(S)
 
     # Compute the Cholesky factor of the precision matrix S. S = L_S * L_S^T
     # This is numerically stable.
-    try:
-        L_S = np.linalg.cholesky(S_np)
-    except np.linalg.LinAlgError:
-        # Add a small amount to the diagonal (Tikhonov regularization)
-        # to ensure S is positive definite, then try again.
-        # This is a common fix for matrices that are only positive semi-definite.
-        epsilon = 1e-10 * np.mean(np.diag(S_np))
-        L_S = np.linalg.cholesky(S_np + epsilon * np.eye(self.N))
+    L_S = np.linalg.cholesky(S_np)
 
     # We want to find G' such that G' = G @ (L_S^T)^-1.
     # This is equivalent to solving the linear system G' @ L_S^T = G.
@@ -160,7 +158,7 @@ def precondition_matrix(G, S):
     G_np = G_prime_T.T
 
     # 3. The new precision matrix is the identity.
-    S_np = np.eye(self.N)
+    S_np = np.eye(G_np.shape[1])
 
     return G_np, S_np
 
@@ -269,144 +267,6 @@ class SingleFieldMatrix(eqx.Module):
         self.G[:] = G[:]
 
 
-class RheologyFieldMatrix(eqx.Module):
-    """
-    A class to handle rheology matrices by composing two SingleFieldMatrix modules.
-    This version delegates field-specific logic to its children, avoiding
-    code repetition.
-
-    Attributes:
-        field_B (SingleFieldMatrix): The module for the 'B' field.
-        field_n (SingleFieldMatrix): The module for the 'n' field.
-        N_B (int): Number of columns for 'B' field.
-        N_n (int): Number of columns for 'n' field.
-        N (int): Total number of parameters.
-        M (int): Total number of points in the field.
-    """
-
-    field_B: SingleFieldMatrix
-    field_n: SingleFieldMatrix
-
-    N_B: int = eqx.field(static=True)
-    N_n: int = eqx.field(static=True)
-    M: int = eqx.field(static=True)
-    N: int = eqx.field(static=True)
-
-    matrix_data: dict
-
-    def __init__(self, matfile: str | dict, penalties: list, precondition: bool = False):
-
-        # Create the specialized modules for each field
-        self.field_B = SingleFieldMatrix(matfile, "B", penalties[0], precondition)
-        self.field_n = SingleFieldMatrix(matfile, "n", penalties[1], precondition)
-
-        # Combined matrix_data
-        self.matrix_data = {
-            "B": self.field_B.matrix_data,
-            "n": self.field_n.matrix_data,
-        }
-
-        # Store combined shapes for convenience
-        self.N_B = self.field_B.N
-        self.N_n = self.field_n.N
-        self.N = self.N_B + self.N_n
-        self.M = self.field_B.M
-
-    @eqx.filter_jit
-    def __call__(self, z: jnp.ndarray) -> jnp.ndarray:
-        """
-        Performs the combined forward matrix-vector product.
-        z -> [θ_B, θ_n]
-        """
-        # Split the input vector
-        z_B = z[: self.N_B]
-        z_n = z[self.N_B :]
-
-        # Delegate to the child modules
-        theta_B = self.field_B(z_B)
-        theta_n = self.field_n(z_n)
-
-        return jnp.hstack((theta_B, theta_n))
-
-    @eqx.filter_jit
-    def jvp(self, z: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
-        """
-        Computes the combined JVP by delegating to child modules.
-        v is a tangent vector shaped like the input z.
-        """
-        # Split primals (z) and tangents (v) according to input shapes
-        z_B, z_n = z[:self.N_B], z[self.N_B:]
-        # v_B, v_n = v[0], v[1] # old way
-        v_B, v_n = v[:self.N_B], v[self.N_B:]
-
-        # Compute JVP for each field independently
-        jvp_B = self.field_B.jvp(z_B, v_B)
-        jvp_n = self.field_n.jvp(z_n, v_n)
-
-        # Combine the results
-        return jnp.hstack((jvp_B, jvp_n))
-
-    @eqx.filter_jit
-    def vjp(self, z: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
-        """
-        Computes the combined VJP by delegating to child modules.
-        v is a cotangent vector shaped like the output of __call__.
-        """
-        # Split primals (z) according to input shapes
-        z_B, z_n = z[:self.N_B], z[self.N_B:]
-        v_B, v_n = v[:self.M], v[self.M:]
-
-        # Compute VJP for each field independently
-        #vjp_B = self.field_B.vjp(z_B, v[0])
-        #vjp_n = self.field_n.vjp(z_n, v[1])
-        vjp_B = self.field_B.vjp(z_B, v_B)
-        vjp_n = self.field_n.vjp(z_n, v_n)
-
-        # Combine the results (which are shaped like the inputs)
-        return jnp.hstack((vjp_B, vjp_n))
-
-    @eqx.filter_jit
-    def prior_nll(self, z: jnp.ndarray) -> tuple[jnp.ndarray]:
-        """
-        Computes the value of the combined prior's NLL.
-        """
-        # Split the input vector
-        z_B = z[:self.N_B]
-        z_n = z[self.N_B:]
-
-        # Delegate to the child modules
-        p_B = self.field_B.prior_nll(z_B)
-        p_n = self.field_n.prior_nll(z_n)
-
-        # Combine the results
-        total_nll = p_B + p_n
-        return total_nll
-
-    @eqx.filter_jit
-    def prior_nll_and_grad(self, z: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
-        """
-        Computes both the value and the gradient of the combined prior's NLL.
-        """
-        # Split the input vector
-        z_B = z[:self.N_B]
-        z_n = z[self.N_B:]
-
-        # Delegate to the child modules
-        p_B, grad_B = self.field_B.prior_nll_and_grad(z_B)
-        p_n, grad_n = self.field_n.prior_nll_and_grad(z_n)
-
-        # Combine the results
-        total_nll = p_B + p_n
-        total_grad = jnp.hstack((grad_B, grad_n))
-
-        return total_nll, total_grad
-
-    def prior_precision(self):
-        return block_diag(
-            self.field_B.prior_precision(), self.field_n.prior_precision()
-        )
-
-
 class RheologyFieldLambdaMatrix(eqx.Module):
     """
     A class to handle rheology matrices by composing two SingleFieldMatrix modules.
@@ -434,21 +294,24 @@ class RheologyFieldLambdaMatrix(eqx.Module):
     S: jnp.ndarray
 
     def __init__(self, matfile: str | dict, Lambda: jnp.ndarray, mask: str = None):
-
-        with h5py.File(matfile, "r") as fid:
-            G_B = fid['B/G'][()]
-            G_n = fid['n/G'][()]
+        if isinstance(matfile, dict):
+            G_B = matfile["B"]["G"]
+            G_n = matfile["n"]["G"]
+        else:
+            with h5py.File(matfile, "r") as fid:
+                G_B = fid['B/G'][()]
+                G_n = fid['n/G'][()]
 
         # Optional coefficient mask (e.g., for removing ill-constrained wavelets)
-        if mask != "none":
+        if mask not in (None, "none"):
             with h5py.File(mask, "r") as fid:
                 mask_B = fid["B"][()].astype(bool)
                 mask_n = fid["n"][()].astype(bool)
                 G_B = G_B[:, mask_B]
                 G_n = G_n[:, mask_n]
 
-        self.G_B = G_B
-        self.G_n = G_n
+        self.G_B = jnp.asarray(G_B)
+        self.G_n = jnp.asarray(G_n)
         self.N_B = self.G_B.shape[1]
         self.N_n = self.G_n.shape[1]
         self.M = self.G_B.shape[0]
