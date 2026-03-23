@@ -385,8 +385,15 @@ SOLVER_OPTS = {
 
 
 def create_solver(
-    model, solver_type, dirichlet_ids=[], side_wall_ids=[], tol=1e-8, maxiter=100
+    model,
+    solver_type,
+    dirichlet_ids=None,
+    side_wall_ids=None,
+    tol=1e-8,
+    maxiter=100,
 ):
+    dirichlet_ids = [1] if dirichlet_ids is None else list(dirichlet_ids)
+    side_wall_ids = [] if side_wall_ids is None else list(side_wall_ids)
 
     try:
         opts = SOLVER_OPTS[solver_type](

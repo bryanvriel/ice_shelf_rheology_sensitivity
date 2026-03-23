@@ -12,33 +12,6 @@ import cryogen
 from .config_utilities import primary_penalty, validate_cfg
 from .file_utilities import make_matrix_filename
 
-# Create a mapping of types to their respective compute/inverse logic
-NORM_MAPPING = {
-    "tanh": (cryogen.compute_tanh_norm_params, cryogen.tanh_inverse),
-    "cdf":  (cryogen.compute_cdf_norm_params, cryogen.cdf_inverse),
-    "sp":   (cryogen.compute_softplus_norm_params, cryogen.softplus_inverse),
-}
-
-FWD_NORM_MAPPING = {
-    "tanh": (cryogen.compute_tanh_norm_params, cryogen.tanh_forward),
-    "cdf":  (cryogen.compute_cdf_norm_params, cryogen.cdf_forward),
-    "sp":   (cryogen.compute_softplus_norm_params, cryogen.softplus_forward),
-}
-
-def inv_norm(θ, opts, norm_type):
-    if norm_type not in NORM_MAPPING:
-        raise ValueError(f"Unsupported norm type: {norm_type}")
-    param_fn, inv_fn = NORM_MAPPING[norm_type]
-    p = param_fn(**opts)
-    return inv_fn(θ, p)
-
-def fwd_norm(θ, opts, norm_type):
-    if norm_type not in FWD_NORM_MAPPING:
-        raise ValueError(f"Unsupported norm type: {norm_type}")
-    param_fn, fwd_fn = FWD_NORM_MAPPING[norm_type]
-    p = param_fn(**opts)
-    return np.array(fwd_fn(θ, p))
-
 def make_spd(
     A: np.ndarray,
     jitter_init: float = 1e-8,
@@ -77,15 +50,7 @@ def mvn_nll(z: jnp.ndarray, S: jnp.ndarray) -> float:
     """
     return 0.5 * jnp.dot(z, S @ z)
 
-# We could compute this explicitly, but let's use jax
-# for now to keep the workflow general for other priors
 mvn_nll_and_grad = jax.value_and_grad(mvn_nll)
-
-
-def tikhonov(z: jnp.ndarray, penalty: float) -> float:
-    return penalty * jnp.dot(z, z)
-
-tikhonov_and_grad = jax.value_and_grad(tikhonov, argnums=0)
 
 
 def create_rheology_field(cfg, hyper_params=None):
@@ -262,9 +227,6 @@ class SingleFieldMatrix(eqx.Module):
 
     def prior_precision(self):
         return self.S
-
-    def update_G(self, G):
-        self.G[:] = G[:]
 
 
 class RheologyFieldLambdaMatrix(eqx.Module):
