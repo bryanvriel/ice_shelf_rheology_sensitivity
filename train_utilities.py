@@ -24,6 +24,7 @@ from firedrake import assemble, ln
 from iceinfer import Timer
 import rasterio
 
+from .config_utilities import validate_cfg
 from . import models
 from .problems import make_mesh, IceShelfProblem
 from .objectives import PosteriorObjective, DataObjective
@@ -44,6 +45,7 @@ def initialize_objects(
     time_ind=None,
     mesh_degree=2,
 ):
+    cfg = validate_cfg(cfg)
 
     outdir = cfg.output_dir
 

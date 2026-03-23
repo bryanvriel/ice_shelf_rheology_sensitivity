@@ -5,6 +5,7 @@ from typing import Any
 
 import jbao
 
+import schurflow.config_utilities as cu
 import schurflow.file_utilities as fu
 import schurflow.train_utilities as tu
 
@@ -22,7 +23,8 @@ class WorkflowContext:
 
 def load_config(args, extra_args, default="default_config.toml"):
     cfg = jbao.utils.parse_toml(args.cfg, default=default)
-    return jbao.utils.update_cfg_with_extra(cfg, extra_args)
+    cfg = jbao.utils.update_cfg_with_extra(cfg, extra_args)
+    return cu.normalize_cfg(cfg)
 
 
 def apply_calibration_overrides(cfg, args, calibration_file="calibration.toml"):
@@ -59,8 +61,10 @@ def initialize_workflow(
     mesh_degree=2,
     outfile_prefix="r",
     outfile_ext="h5",
+    require_vi=False,
 ):
     cfg = apply_calibration_overrides(cfg, args)
+    cfg = cu.validate_cfg(cfg, require_vi=require_vi)
     data_file = fu.data_filename(cfg, args)
     outfile = resolve_output_file(
         cfg,

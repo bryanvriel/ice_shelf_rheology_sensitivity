@@ -68,6 +68,7 @@ nll_scale = 2500.0
 penalties_B = [0.01, 0.0]
 penalties_n = [0.01, 0.0]
 
+meshfile = "../aux/rutford_simpler_1km.msh"
 opt_type = "adabelief"
 
 [model]
@@ -75,7 +76,6 @@ B_min = 0.1
 B_max = 2.5
 n_min = 1.0
 n_max = 5.0
-meshfile = "../aux/rutford_simpler_1km.msh"
 solver = "icepack"
 
 [rheology]

@@ -80,6 +80,7 @@ def main(cfg, args):
         args,
         comm=ensemble.comm,
         data_obj=args.data_obj,
+        require_vi=True,
     )
     Nt = ctx.problem.Nt
 

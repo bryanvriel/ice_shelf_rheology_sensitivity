@@ -17,6 +17,18 @@ n_plot_samples = 40
 u_sigma = 10.0
 v_sigma = 10.0
 
+[matrix]
+spectral = false
+spectral_L_min = 10.0
+use_ref = false
+mask = "none"
+
+[model]
+B_min = 0.1
+B_max = 3.0
+n_min = 0.5
+n_max = 5.5
+
 [rheology]
 exp_in = 2.0
 exp_out = 4.0
@@ -47,22 +59,38 @@ u_emulator_sigma = 5.0
 v_emulator_sigma = 5.0
 
 [inverse]
+lr = 0.0005
 lr_schedule = [
     [0, 0.002],
     [100, 0.001],
     [1000, 0.0005],
     [3000, 0.0003],
 ]
+dirichlet_ids = [1]
+bfgs_maxcor = 50
 n_iter = 4000
 bfgs_factr = 100.0
 joint = true
+fixed_n = 3.0
 nll_scale = 1000.0
 precondition = false
 objective_scale = 1.0
+penalty_B = 1.0
+penalty_n = 1.0
 penalties_B = [1.0, 1000.0]
 penalties_n = [1.0, 1000.0]
 meshfile = "aux/rutford_inverse_2km.msh"
+smooth_boundary = false
+n_norm_type = "cdf"
+B_norm_type = "cdf"
+norm_scale = 3.0
 opt_type = "adabelief"
+opt_init_seed = 744
+opt_init_amp = 0.05
+hyper_params = []
+
+[vi]
+hess_reg = 1.0
 
 [raster_files]
 r_vx0 = "rutford_smooth_vx.tif"

@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import equinox as eqx
 import cryogen
 
+from .config_utilities import primary_penalty, validate_cfg
 from .file_utilities import make_matrix_filename
 
 # Create a mapping of types to their respective compute/inverse logic
@@ -87,7 +88,10 @@ def tikhonov(z: jnp.ndarray, penalty: float) -> float:
 tikhonov_and_grad = jax.value_and_grad(tikhonov, argnums=0)
 
 
-def create_rheology_field(cfg, hyper_params=[]):
+def create_rheology_field(cfg, hyper_params=None):
+    cfg = validate_cfg(cfg)
+    if hyper_params is None:
+        hyper_params = cfg.inverse.hyper_params
 
     if cfg.matrix.spectral:
         matfile = threshold_spectral_matrix(cfg.matrix.spectral_L_min)
@@ -99,15 +103,15 @@ def create_rheology_field(cfg, hyper_params=[]):
         field = SingleFieldMatrix(
             matfile,
             "B",
-            cfg.inverse.penalty_B,
+            cfg.inverse.penalties_B,
             precondition=cfg.inverse.precondition,
         )
         return field
 
     # Unpack hyper parameters
     if len(hyper_params) == 0:
-        σ_B = np.sqrt(1 / cfg.inverse.penalty_B)
-        σ_n = np.sqrt(1 / cfg.inverse.penalty_n)
+        σ_B = np.sqrt(1 / primary_penalty(cfg.inverse.penalties_B))
+        σ_n = np.sqrt(1 / primary_penalty(cfg.inverse.penalties_n))
         ρ = 0.0
     elif len(hyper_params) == 2:
         σ_B, σ_n = hyper_params
