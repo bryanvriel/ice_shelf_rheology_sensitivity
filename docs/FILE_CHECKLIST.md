@@ -128,21 +128,20 @@ It is organized by file and roughly grouped by phase. The intent is to make impl
 
 ### `vi.py`
 
-- [ ] Decide whether this is the primary Gaussian VI path
+- [ ] Keep this as the primary Gaussian VI path
 - [ ] Keep only one fit/update pattern
 - [ ] Reduce duplicated MPI and sampling logic if shared with other VI modules
-
-### `vi_precision.py`
-
-- [ ] Fix broken references such as undefined `tril_bij`
-- [ ] Decide whether this module stays active or is retired
-- [ ] If retired, move it out of the main path
 
 ### `hvi.py`
 
 - [ ] Keep only the parts needed for hierarchical VI
 - [ ] Avoid duplicating generic Gaussian VI logic already present elsewhere
 - [ ] Reuse shared save/load helpers instead of duplicating them in scripts
+
+### Retired precision path
+
+- [ ] Remove `vi_precision.py`
+- [ ] Remove precision-only driver scripts
 
 ### `old_hvi.py`
 

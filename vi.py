@@ -7,13 +7,18 @@ import jax
 from jax import numpy as jnp
 from jax import random, value_and_grad
 from jax.scipy.linalg import solve_triangular, cho_solve
-from jax.scipy.special import expit
 import optax
 
 from tensorflow_probability.substrates import jax as tfp
 
 tfb = tfp.bijectors
-tfd = tfp.distributions
+
+from .fields import make_spd
+from .variational_utilities import (
+    load_params,
+    natural_gradient_transform,
+    save_params,
+)
 
 try:
     from mpi4py import MPI
@@ -446,119 +451,6 @@ def make_natgrad_transform_for_svi(
         return updates, state
 
     return optax.GradientTransformation(init_fn, update_fn)
-
-
-def natural_gradient_transform(
-   bijector: tfb.Bijector,
-    damping: float = 1e-5,   # Damping for numerical stability
-) -> optax.GradientTransformation:
-    """
-    AD-based Natural Gradient. Robust and correct.
-    Recommended for PDE-constrained problems.
-    """
-
-    def init_fn(params):
-        return optax.EmptyState()
-
-    def update_fn(grads, state, params):
-        # 1. Setup
-        m = params["mean"]
-        raw = params["raw_tril"]
-
-        # Forward pass through bijector (Cheap)
-        L = bijector.forward(raw)
-
-        # 2. Mean Update: nat_grad_mu = (Sigma + damping*I) @ grad_mu
-        # Efficient computation: L @ (L.T @ g_m)
-        g_m = grads["mean"]
-        Lt_gm = L.T @ g_m
-        nat_g_m = L @ Lt_gm + damping * g_m
-
-        # 3. Covariance Update
-        # Pullback: Map gradient from raw-space to L-space
-        # This uses JAX AD to handle the Softplus/Chain-rule correctly
-        inv = lambda L_: bijector.inverse(L_)
-        _, pullback_inv = jax.vjp(inv, L)
-        g_raw = grads["raw_tril"]
-        (g_L,) = pullback_inv(g_raw)
-
-        # Project gradients to lower triangle (clean up AD noise)
-        g_L = jnp.tril(g_L)
-
-        # Compute Natural Gradient direction in L-space
-        # We solve: nat_g_L = L * tril(L^T * g_L) - ...
-        # But doing it in Sigma space is often more stable for AD.
-
-        # Method: Convert g_L -> Natural Gradient in Sigma space
-        # Y = g_L @ inv(L)
-        # We use solve_triangular for stability
-        # Y^T = inv(L)^T @ g_L^T = solve(L.T, g_L.T)
-        Yt = solve_triangular(L.T, g_L.T, lower=False)
-        Y = Yt.T
-
-        # Symmetrize the gradient in Sigma space (Crucial Step)
-        # G_Sigma = 0.5 * (Y + Y.T)
-        G_Sigma = 0.5 * (Y + Y.T)
-
-        # Natural Gradient Step in Sigma space:
-        # Delta_Sigma = 2 * Sigma @ G_Sigma @ Sigma
-        # Efficiently: Sigma = L @ L.T
-        # Delta_Sigma = 2 * L @ L.T @ G_Sigma @ L @ L.T
-
-        # Let Z = L.T @ G_Sigma @ L
-        Z = L.T @ (G_Sigma @ L)
-
-        # Delta_Sigma = 2 * L @ Z @ L.T
-
-        # We need to map Delta_Sigma back to Delta_L
-        # Delta_L = Delta_Sigma @ L^{-T} * 0.5
-        # Delta_L = (2 * L @ Z @ L.T) @ L^{-T} * 0.5
-        # Delta_L = L @ Z
-
-        nat_g_L = L @ Z
-
-        # Enforce lower triangularity on the update
-        nat_g_L = jnp.tril(nat_g_L)
-
-        # 4. Pushforward: Map nat_g_L -> nat_g_raw
-        # This handles the 1/sigmoid scaling automatically and safely
-        _, d_raw = jax.jvp(inv, (L,), (nat_g_L,))
-        nat_g_raw = d_raw
-
-        # Combine
-        updates = {"mean": nat_g_m, "raw_tril": nat_g_raw}
-
-        return updates, state
-
-    return optax.GradientTransformation(init_fn, update_fn)
-
-
-# ---------- Pure helper functions (no class state) ----------
-
-
-def make_spd(A, jitter_init: float = 1e-8, max_tries: int = 8) -> np.ndarray:
-    """
-    Ensure a symmetric positive-definite matrix close to A by adding
-    diagonal jitter.
-    """
-    M = np.asarray(A, dtype=float)
-    M = 0.5 * (M + M.T)  # symmetrize
-
-    jitter = jitter_init
-    for _ in range(max_tries + 1):
-        try:
-            np.linalg.cholesky(M)
-            return M
-        except np.linalg.LinAlgError:
-            M = M + jitter * np.eye(M.shape[0])
-            jitter *= 10.0
-
-    # Last resort: shift by (-eigmin + jitter_init)
-    w = np.linalg.eigvalsh(0.5 * (M + M.T))
-    shift = max(0.0, -w[0] + jitter_init)
-    M = M + shift * np.eye(M.shape[0])
-    np.linalg.cholesky(M)  # let this raise if still not SPD
-    return M
 
 
 # end of file

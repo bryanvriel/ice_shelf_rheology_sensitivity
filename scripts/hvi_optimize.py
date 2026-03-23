@@ -1,59 +1,121 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import numpy as np
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-from functools import partial
 import argparse
-import pickle
-import h5py
 import sys
-import os
 
 import firedrake
-from mpi4py import MPI
-
-import schurflow.train_utilities as tu
-import schurflow.file_utilities as fu
-from schurflow.hvi import SVIFullRankGaussianCorrelated, natural_gradient_transform
-
-import cryogen
-import jbao
-
+import h5py
 import jax
-import jax.numpy as jnp
+from jax import numpy as jnp
+import numpy as np
 import optax
-from optax.transforms import freeze
+
+import schurflow.file_utilities as fu
+import schurflow.workflow_utils as wu
+from schurflow.hvi import (
+    SVIFullRankGaussianCorrelated,
+    load_params,
+    natural_gradient_transform,
+    save_params,
+)
 
 
 def parse():
     parser = argparse.ArgumentParser(
-        description="Run SVI.",
+        description="Run hierarchical Gaussian variational inference.",
         parents=[fu.common_parse()],
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "-n_iter",
         action="store",
         type=int,
         default=10000,
-        help="Number of iterations. Default: 10000.",
+        help="Number of optimization iterations.",
     )
     parser.add_argument(
-        '--opt',
+        "--opt",
         action="store",
         type=str,
         default="natgrad",
-        help="Optimizer type. 'natgrad' or optax optimizer. Default: 'natgrad'.",
+        help="Optimizer type. Use `natgrad` or any optax optimizer name.",
+    )
+    parser.add_argument(
+        "-mrs",
+        action="store",
+        type=int,
+        default=None,
+        dest="map_restore_stage",
+        help="Integer MAP stage to restore from. Default: latest stage.",
     )
     return parser.parse_known_args()
 
 
-def main(cfg, args):
+def _num_mc_samples(cfg, n_proc):
+    num_mc = getattr(cfg.vi, "num_mc", 0)
+    return n_proc if num_mc == 0 else num_mc
 
-    # Number of ensemble members is set to the number of MPI processes
-    # We force each ensemble member to only use 1 MPI process
+
+def _hyperprior_config(cfg):
+    field_map = {
+        "sigma_B_min": "σ_B_min",
+        "sigma_n_min": "σ_n_min",
+        "sigma_B_default": "σ_B_default",
+        "sigma_n_default": "σ_n_default",
+        "rho_default": "ρ_default",
+        "lambda_sigma": "λ_σ",
+        "lambda_rho": "λ_ρ",
+    }
+    config = {}
+    for cfg_key, model_key in field_map.items():
+        value = getattr(cfg.vi, cfg_key, None)
+        if value is not None:
+            config[model_key] = value
+    return config
+
+
+def _initial_hyperparams(cfg):
+    hyper_params = tuple(getattr(cfg.inverse, "hyper_params", ()))
+    if len(hyper_params) == 3:
+        return hyper_params
+    if len(hyper_params) == 2:
+        return hyper_params[0], hyper_params[1], 0.0
+    return None, None, 0.0
+
+
+def _build_optimizer(args, cfg, svi_model):
+    lr = getattr(cfg.vi, "lr", cfg.inverse.lr)
+    lr_hyper = getattr(cfg.vi, "lr_hyper", lr)
+    param_labels = {
+        "mean": "variational",
+        "raw_tril": "variational",
+        "log_σ_B_shifted": "hyper",
+        "log_σ_n_shifted": "hyper",
+        "raw_ρ": "hyper_corr",
+    }
+
+    if args.opt == "natgrad":
+        return optax.multi_transform(
+            {
+                "variational": optax.chain(
+                    natural_gradient_transform(svi_model.bij, damping=1e-4),
+                    optax.clip_by_global_norm(5.0),
+                    optax.scale_by_learning_rate(lr),
+                ),
+                "hyper": optax.adam(learning_rate=lr_hyper),
+                "hyper_corr": optax.adam(learning_rate=0.5 * lr_hyper),
+            },
+            param_labels=param_labels,
+        )
+
+    return optax.chain(
+        optax.clip_by_global_norm(4.0),
+        getattr(optax, args.opt)(learning_rate=lr),
+    )
+
+
+def main(cfg, args):
     comm = firedrake.COMM_WORLD
     ensemble = firedrake.Ensemble(comm, 1)
     n_proc = ensemble.ensemble_comm.size
@@ -65,136 +127,92 @@ def main(cfg, args):
         sys.stdout.flush()
         comm.Barrier()
 
-    outdir = cfg.output_dir
-    data_file = fu.data_filename(cfg, args)
-
-    if cfg.vi.num_mc == 0:
-        num_mc_samples = n_proc
-    else:
-        num_mc_samples = cfg.vi.num_mc
-
-    # Create objects
-    # We set data_obj=True to create a data-only objective
-    field, problem, objective, converter = tu.initialize_objects(
-        cfg, data_file, data_obj=True, comm=ensemble.comm,
+    num_mc_samples = _num_mc_samples(cfg, n_proc)
+    checkpoint_ext = f"{num_mc_samples:02d}_{args.opt[:3]}.pkl"
+    ctx = wu.initialize_workflow(
+        cfg,
+        args,
+        comm=ensemble.comm,
+        data_obj=True,
+        require_vi=True,
+        outfile_prefix="v",
+        outfile_ext=checkpoint_ext,
     )
+    mapfile = fu.make_results_filename(ctx.cfg, data_file=ctx.data_file)
+    _, map_restore_group = wu.resolve_restore_stage(
+        mapfile,
+        args.map_restore_stage,
+        default_to_latest=True,
+    )
+
+    mpi_print("Data file:", ctx.data_file)
+    mpi_print("MAP file:", mapfile)
+    mpi_print("Checkpoint file:", ctx.outfile)
 
     def compute_log_likelihood(x):
         try:
-            nll, grad_nll = objective(x)
+            nll, grad_nll = ctx.objective(x)
         except firedrake.exceptions.ConvergenceError:
             nll = np.nan
-            grad_nll = np.full((field.N,), np.nan, dtype=np.float64)
+            grad_nll = np.full((ctx.field.N,), np.nan, dtype=np.float64)
         return -nll, -grad_nll
 
-    # Hyperprior configuration
-    hyperprior_config = {
-        'σ_B_min': cfg.vi.sigma_B_min,
-        'σ_n_min': cfg.vi.sigma_n_min,
-        'σ_B_default': cfg.vi.sigma_B_default,
-        'σ_n_default': cfg.vi.sigma_n_default,
-        'ρ_default': cfg.vi.rho_default,
-        'λ_σ': cfg.vi.lambda_sigma,
-        'λ_ρ': cfg.vi.lambda_rho,
-    }
-
-    # Create HVI model
     svi_model = SVIFullRankGaussianCorrelated(
         loglik_fn=compute_log_likelihood,
-        num_params_B=field.N_B,
-        hyperprior_config=hyperprior_config,
+        num_params_B=ctx.field.N_B,
+        hyperprior_config=_hyperprior_config(ctx.cfg),
         num_mc=num_mc_samples,
         antithetic=True,
         dtype=jnp.float64,
         comm=comm,
     )
 
-    ext = f"{num_mc_samples:02d}_{args.opt[:3]}.pkl"
-    paramfile = fu.make_results_filename(cfg, prefix="v", ext=ext)
-
-    # Load MAP results
-    mapfile = fu.make_results_filename(cfg)
-    restore_stage = fu.get_latest_stage(mapfile)
     with h5py.File(mapfile, "r") as fid:
-        print(f"Restoring {restore_stage} from {mapfile}")
-        group = fid[f"{restore_stage}"]
+        mpi_print(f"Restoring {map_restore_group} from {mapfile}")
+        group = fid[map_restore_group]
         z_map = group["z"][()]
         H = group["hessian"][()]
 
-    # NOTE:REGULARIZATION can be important
-    H_reg = H + cfg.vi.hess_reg * np.eye(z_map.size)
-
-    # Initial hyper parameters from config
-    init_σ_B, init_σ_n, init_ρ = cfg.inverse.hyper_params
-
-    # Initialize
+    H_reg = H + ctx.cfg.vi.hess_reg * np.eye(z_map.size)
+    init_σ_B, init_σ_n, init_ρ = _initial_hyperparams(ctx.cfg)
     params = svi_model.init_from_map_hessian(
-        z_map, H_reg, init_σ_B=init_σ_B, init_σ_n=init_σ_n, init_ρ=init_ρ,
+        z_map,
+        H_reg,
+        init_σ_B=init_σ_B,
+        init_σ_n=init_σ_n,
+        init_ρ=init_ρ,
     )
 
-    # If restoring, overwrite parameters
     opt_state = None
     if args.restore:
-        print('restoring')
-        params, extra = load_params(paramfile)
-        opt_state = extra['opt_state']
-        loop_key = extra['key']
+        params, extra = load_params(ctx.outfile)
+        opt_state = extra["opt_state"]
+        loop_key = extra["key"]
     else:
-        seed = 803
-        key = jax.random.PRNGKey(seed)
-        init_key, loop_key = jax.random.split(key)
+        seed = getattr(ctx.cfg.inverse, "opt_init_seed", 803)
+        loop_key = jax.random.PRNGKey(seed)
 
-    param_labels = {
-        "mean": "variational",
-        "raw_tril": "variational",
-        "log_σ_B_shifted": "hyper",
-        "log_σ_n_shifted": "hyper",
-        "raw_ρ": "hyper_corr",
-    }
-
-    # Create the optimizer
-    if args.opt == "natgrad":
-        optimizer = optax.multi_transform(
-            {
-                "variational": optax.chain(
-                    natural_gradient_transform(svi_model.bij, damping=1e-4),
-                    optax.clip_by_global_norm(5.0),
-                    optax.scale_by_learning_rate(cfg.vi.lr),
-                ),
-                "hyper": optax.adam(learning_rate=cfg.vi.lr_hyper),
-                "hyper_corr": optax.adam(learning_rate=0.5*cfg.vi.lr_hyper),
-            },
-            param_labels=param_labels,
-        )
-        
-    else:
-        optimizer = optax.chain(
-            optax.clip_by_global_norm(4.0),
-            getattr(optax, args.opt)(learning_rate=lr),
-        )
-
-    # Initialize optimizer state if not restored
+    optimizer = _build_optimizer(args, ctx.cfg, svi_model)
     if opt_state is None:
         opt_state = optimizer.init(params)
 
-    # Run the optimization loop 
     def callback(t, hist, params, opt_state, key):
-        logP, kl, σ_B, σ_n, ρ = [hist[:, j] for j in range(5)]
-        elbo = logP[-1] - kl[-1]
         if t % 10 == 0:
+            logP, kl, σ_B, σ_n, ρ = [hist[:, j] for j in range(5)]
+            elbo = logP[-1] - kl[-1]
             print(
-                f'{t:5d} | '
-                f'{elbo:13.6f} | '
-                f'{logP[-1]:13.6f} | '
-                f'{kl[-1]:13.6f} | '
-                f'{σ_B[-1]:5.2f} | '
-                f'{σ_n[-1]:5.2f} | '
-                f'{ρ[-1]:4.2f}'
+                f"{t:5d} | "
+                f"{elbo:13.6f} | "
+                f"{logP[-1]:13.6f} | "
+                f"{kl[-1]:13.6f} | "
+                f"{σ_B[-1]:5.2f} | "
+                f"{σ_n[-1]:5.2f} | "
+                f"{ρ[-1]:4.2f}"
             )
         extra = {"hist": hist, "opt_state": opt_state, "key": key}
-        save_params(paramfile, params, extra=extra)
+        save_params(ctx.outfile, params, extra=extra)
 
-    svi_model.fit(
+    params, opt_state, loop_key, hist = svi_model.fit(
         params,
         optimizer,
         opt_state,
@@ -203,23 +221,17 @@ def main(cfg, args):
         jit=False,
         callback=callback,
     )
-
-
-def save_params(outfile, params, extra={}):
-    with open(outfile, "wb") as fid:
-        pickle.dump(params, fid)
-        pickle.dump(extra, fid)
-
-
-def load_params(outfile):
-    with open(outfile, "rb") as fid:
-        params = pickle.load(fid)
-        extra = pickle.load(fid)
-    return params, extra
+    save_params(
+        ctx.outfile,
+        params,
+        extra={"hist": hist, "opt_state": opt_state, "key": loop_key},
+    )
 
 
 if __name__ == "__main__":
     args, extra_args = parse()
-    main(args, extra_args)
+    cfg = wu.load_config(args, extra_args)
+    main(cfg, args)
+
 
 # end of file

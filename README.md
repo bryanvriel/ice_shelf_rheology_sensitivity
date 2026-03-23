@@ -98,7 +98,7 @@ The central object model follows this flow:
 - `fields.py` maps latent coefficients to control fields and defines priors
 - `problems.py` defines the PDE problem, observations, and data misfit
 - `objectives.py` combines priors and data into inverse-problem objectives
-- `vi.py`, `vi_precision.py`, `hvi.py`, `schur.py`, and `diagnostics.py` sit on top of that core to quantify uncertainty
+- `vi.py`, `hvi.py`, `schur.py`, and `diagnostics.py` sit on top of that core to quantify uncertainty
 
 ## Core Modules
 
@@ -156,13 +156,12 @@ Despite its name, this is really a core workflow utility module.
 - converts model outputs to gridded arrays
 - generates saved prediction products from inferred parameters
 
-### `vi.py`, `vi_precision.py`, `hvi.py`
+### `vi.py` and `hvi.py`
 
 These modules provide Gaussian variational inference tools.
 
-- `vi.py`: full-rank Gaussian VI in covariance form
-- `vi_precision.py`: full-rank Gaussian VI in precision-Cholesky form
-- `hvi.py`: hierarchical VI with learnable prior scales and cross-field correlation
+- `vi.py`: the primary full-rank Gaussian VI path in covariance form
+- `hvi.py`: the optional hierarchical variant with learnable prior scales and cross-field correlation
 
 These are useful when a Laplace approximation is too restrictive but you still want a tractable Gaussian family.
 

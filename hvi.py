@@ -1,20 +1,22 @@
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 
 import jax
 from jax import numpy as jnp
 from jax import random, value_and_grad
-from jax.scipy.linalg import solve_triangular, cho_solve
-from jax.scipy.special import expit
-from jax.scipy.stats import norm as norm_dist
+from jax.scipy.linalg import cho_solve
 import optax
 
 from tensorflow_probability.substrates import jax as tfp
 
 tfb = tfp.bijectors
-tfd = tfp.distributions
 
 from .fields import make_spd
+from .variational_utilities import (
+    load_params,
+    natural_gradient_transform as _natural_gradient_transform,
+    save_params,
+)
 
 try:
     from mpi4py import MPI
@@ -649,62 +651,11 @@ def natural_gradient_transform(
     bijector: tfb.Bijector,
     damping: float = 1e-5,
 ) -> optax.GradientTransformation:
-    """
-    Natural Gradient for Full-Rank Gaussian VI with scalar hyperparameters.
-    """
-
-    def init_fn(params):
-        return optax.EmptyState()
-
-    def update_fn(grads, state, params):
-        dtype = params["mean"].dtype
-        m = params["mean"]
-        raw = params["raw_tril"]
-        L = bijector.forward(raw)
-        n = L.shape[0]
-
-        # --- Mean Update ---
-        g_m = grads["mean"]
-        Lt_gm = L.T @ g_m
-        nat_g_m = L @ Lt_gm + damping * g_m
-
-        # --- Covariance Update ---
-        inv = lambda L_: bijector.inverse(L_)
-        _, pullback_inv = jax.vjp(inv, L)
-        g_raw = grads["raw_tril"]
-        (g_L,) = pullback_inv(g_raw)
-        g_L = jnp.tril(g_L)
-
-        # Regularized solve for numerical stability
-        L_damped = L + damping * jnp.eye(n, dtype=dtype)
-        Yt = solve_triangular(L_damped.T, g_L.T, lower=False)
-        Y = Yt.T
-
-        G_Σ = 0.5 * (Y + Y.T)
-        Z = L.T @ (G_Σ @ L)
-        nat_g_L = L @ Z
-        nat_g_L = jnp.tril(nat_g_L) + damping * g_L  # Add damping
-
-        _, d_raw = jax.jvp(inv, (L,), (nat_g_L,))
-        nat_g_raw = d_raw
-
-        # --- Hyperparameters (identity) ---
-        zero = jnp.array(0.0, dtype=dtype)
-        nat_g_log_σ_B = grads.get("log_σ_B_shifted", zero)
-        nat_g_log_σ_n = grads.get("log_σ_n_shifted", zero)
-        nat_g_raw_ρ = grads.get("raw_ρ", zero)
-
-        updates = {
-            "mean": nat_g_m,
-            "raw_tril": nat_g_raw,
-            "log_σ_B_shifted": nat_g_log_σ_B,
-            "log_σ_n_shifted": nat_g_log_σ_n,
-            "raw_ρ": nat_g_raw_ρ,
-        }
-
-        return updates, state
-
-    return optax.GradientTransformation(init_fn, update_fn)
+    return _natural_gradient_transform(
+        bijector,
+        damping=damping,
+        passthrough_keys=("log_σ_B_shifted", "log_σ_n_shifted", "raw_ρ"),
+    )
 
 
 def estimate_prior_hyperparams_regularized(
