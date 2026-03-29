@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from copy import deepcopy
 from numbers import Number
+from pathlib import Path
 from typing import Any
+import tomllib
 
 from jbao.utils import DictToStruct
 
 
 class ConfigValidationError(ValueError):
+    pass
+
+
+class ConfigInheritanceError(ValueError):
     pass
 
 
@@ -43,6 +49,44 @@ _NORMALIZED_DEFAULTS = {
         "hess_reg": 1.0,
     },
 }
+
+
+def _merge_dicts(base: dict, override: dict) -> dict:
+    merged = deepcopy(base)
+    for key, value in override.items():
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            merged[key] = _merge_dicts(base_value, value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _load_cfg_dict(path: Path, chain: tuple[Path, ...]) -> dict:
+    path = path.expanduser().resolve()
+    if path in chain:
+        cycle = " -> ".join(str(p) for p in (*chain, path))
+        raise ConfigInheritanceError(f"Config extends cycle detected: {cycle}")
+
+    try:
+        with path.open("rb") as fid:
+            data = tomllib.load(fid)
+    except FileNotFoundError as exc:
+        raise ConfigInheritanceError(f"Config file not found: {path}") from exc
+
+    extends = data.pop("extends", None)
+    if extends is None:
+        return data
+    if not isinstance(extends, str):
+        raise ConfigInheritanceError(f"`extends` in {path} must be a string path.")
+
+    base_path = path.parent / extends
+    base_cfg = _load_cfg_dict(base_path, (*chain, path))
+    return _merge_dicts(base_cfg, data)
+
+
+def load_cfg_file(path: str | Path) -> DictToStruct:
+    return DictToStruct(_load_cfg_dict(Path(path), ()))
 
 
 def _to_dict(cfg: DictToStruct | dict) -> dict:

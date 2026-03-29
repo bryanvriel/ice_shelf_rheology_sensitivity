@@ -21,8 +21,8 @@ class WorkflowContext:
     converter: Any
 
 
-def load_config(args, extra_args, default="default_config.toml"):
-    cfg = jbao.utils.parse_toml(args.cfg, default=default)
+def load_config(args, extra_args):
+    cfg = cu.load_cfg_file(args.cfg)
     cfg = jbao.utils.update_cfg_with_extra(cfg, extra_args)
     return cu.normalize_cfg(cfg)
 
@@ -31,7 +31,7 @@ def apply_calibration_overrides(cfg, args, calibration_file="calibration.toml"):
     if not (getattr(args, "cal", False) or getattr(args, "disc", False)):
         return cfg
 
-    cal = jbao.utils.parse_toml(calibration_file).todict()[cfg.output_dir]
+    cal = cu.load_cfg_file(calibration_file).todict()[cfg.output_dir]
     key = "calibration_hyper_params" if args.cal else "discovery_hyper_params"
     return cfg.update("inverse.hyper_params", cal[key])
 

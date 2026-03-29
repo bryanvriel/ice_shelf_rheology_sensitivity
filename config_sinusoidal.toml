@@ -1,3 +1,4 @@
+extends = "default_config.toml"
 
 output_dir = "outputs_sinusoidal_lowfreq"
 
