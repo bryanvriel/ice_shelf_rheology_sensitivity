@@ -1,26 +1,54 @@
 
-output_dir = "config_default"
+output_dir = "outputs_default"
 
 along_flow_distance_file = "along_flow_distance.tif"
-shelf_coords_file = "coords_rutford_simplified_shelf.txt"
+shelf_coords_file = "aux/coords_simplified_inverse_shelf.txt"
 warmup_velocity_file = "grids_warmup.h5"
 output_file = "dirichlet_random.h5"
 
-scale_velocity = false
+velocity_scale = 1.0
 mod_margins = true
 along_modulate = false
+
+add_noise = true
+filter_data = false
 
 plot = true
 n_plot_samples = 40
 
 [data]
-u_sigma = 10.0
-v_sigma = 10.0
+#u_sigma = 1.5
+#v_sigma = 1.5
+#u_sigma = 1.0
+#v_sigma = 1.0
+u_sigma = 4.0
+v_sigma = 4.0
+
+amp = "high"
+loc = "GL"
 
 [matrix]
+supports_B = [5.5e3, 11.0e3, 22.0e3]
+min_strain_B = [0.0, 0.0, 0.0]
+
+supports_n = [5.5e3, 11.0e3, 22.0e3]
+min_strain_n = [0.0, 0.0, 0.0]
+
+#supports_n = [11.0e3, 22.0e3]
+#min_strain_n = [0.0, 0.0]
+
+#supports_n = [22.0e3,]
+#min_strain_n = [0.0,]
+
+overlap = 0.7
+base = 1.0
+
 spectral = false
+# km
 spectral_L_min = 10.0
+
 use_ref = false
+
 mask = "none"
 
 [model]
@@ -28,6 +56,7 @@ B_min = 0.1
 B_max = 3.0
 n_min = 0.5
 n_max = 5.5
+meshfile = "aux/simplified_1km.msh"
 
 [rheology]
 exp_in = 2.0
@@ -35,15 +64,26 @@ exp_out = 4.0
 exp_tau = 9e3
 exp_center = 45.0e3
 
+mod_margin_rigidity = false
+mod_margin_exponent = false
+mod_margin_high = false
+
+n_ref = 3.0
+n_amp = 1.0
+T_n = 45.0e3
+n_shift = 0.0
+
 B0 = 0.625
 B_rifts = [0.7, 0.6]
+B_amp = 0.5
+T_B = 20.0e3
+B_shift = 0.0
 
 smb_in = -10.0
 smb_out = -1.0
 
 T_in = -25.0
 T_out = -20.0
-n_amp = 1.0
 
 D_ref = 0.0
 side_friction = 0.02
@@ -60,36 +100,79 @@ v_emulator_sigma = 5.0
 
 [inverse]
 lr = 0.0005
-lr_schedule = [
-    [0, 0.002],
-    [100, 0.001],
-    [1000, 0.0005],
-    [3000, 0.0003],
-]
-dirichlet_ids = [1]
+lr_schedule = []
+dirichlet_ids = [1,]
+
+bfgs_factr = 0.001
 bfgs_maxcor = 50
+
 n_iter = 4000
-bfgs_factr = 100.0
 joint = true
 fixed_n = 3.0
-nll_scale = 1000.0
+nll_scale = 1.0
 precondition = false
 objective_scale = 1.0
-penalty_B = 1.0
-penalty_n = 1.0
-penalties_B = [1.0, 1000.0]
-penalties_n = [1.0, 1000.0]
-meshfile = "aux/rutford_inverse_2km.msh"
-smooth_boundary = false
+penalty_B = 0.0625
+penalty_n = 0.1111
+use_Lambda = false
+
+meshfile = "aux/simplified_inverse_1km.msh"
+smooth_boundary = true
 n_norm_type = "cdf"
 B_norm_type = "cdf"
 norm_scale = 3.0
-opt_type = "adabelief"
+opt_type = "bfgs"
 opt_init_seed = 744
 opt_init_amp = 0.05
-hyper_params = []
+
+# Default: good for the margin experiments
+#hyper_params = [4.0, 3.0, 0.0]
+
+# Default setting for rigidity-only, fixed n, calibrated runs
+#hyper_params = [6.0, 6.0, 0.0]
+
+# Default setting for discovery runs
+#hyper_params = [3.0, 4.0, 0.0]
+
+# Default for calibration for the margin sims
+hyper_params = [5.75, 1.5, 0.0]
+
+# Try tighter variances for better predictive power?
+#hyper_params = [4.0, 2.0, 0.0]
+#hyper_params = [4.0, 4.0, 0.0]
+#hyper_params = [5.0, 4.0, 0.0]
+
+# OK for all experiments?
+#hyper_params = [4.0, 3.0, 0.0]
+# Try a slightly higher B variance
+#   - Nah, margin_exponent results are a bit too bad
+#hyper_params = [5.0, 3.0, 0.0]
+
+# Try with some prior anti-correlation
+#hyper_params = [3.25, 2.25, -0.2]
+#hyper_params = [3.0, 2.0, -0.2]
+#hyper_params = [4.0, 2.5, -0.2]
+
+# What happens with this?
+# It allows to much relative flexibility of n vs. B; the n variations are
+# modeled, sometimes overly so, but the rigidity variations become less
+# recovered. Seems like it's beneficial to increase the the B variance
+# relative to n
+#hyper_params = [3.0, 3.0, -0.2]
+
+#hyper_params = [6.0, 3.0, 0.0]
 
 [vi]
+num_mc = 0
+lr = 8e-4
+lr_hyper = 2e-4
+sigma_B_min = 0.7
+sigma_n_min = 0.7
+sigma_B_default = 1.75
+sigma_n_default = 1.75
+rho_default = -0.25
+lambda_sigma = 0.1
+lambda_rho = 0.1
 hess_reg = 1.0
 
 [raster_files]
