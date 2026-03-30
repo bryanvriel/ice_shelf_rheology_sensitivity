@@ -11,16 +11,9 @@ v_sigma = 0.5
 use_ref = true
 base = 1.5
 
-[prep]
+[sim]
 meshfile = "../aux/rutford_simpler_1km.msh"
 
-[model]
-B_min = 0.1
-B_max = 2.5
-n_min = 1.0
-n_max = 5.0
-
-[rheology]
 exp_in = 2.25
 exp_out = 2.25
 
@@ -32,3 +25,9 @@ smb_out = 0.0
 
 D_ref = -30.0
 side_friction = 0.04
+
+[model]
+B_min = 0.1
+B_max = 2.5
+n_min = 1.0
+n_max = 5.0

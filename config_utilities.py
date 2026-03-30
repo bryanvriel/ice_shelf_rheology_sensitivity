@@ -24,33 +24,6 @@ _SUPPORTED_NORM_TYPES = {"log", "tanh", "arctan", "cdf", "sp"}
 _SUPPORTED_B_NORM_TYPES = _SUPPORTED_NORM_TYPES | {"viscosity"}
 _SUPPORTED_HYPERPARAM_LENGTHS = {0, 2, 3}
 
-_NORMALIZED_DEFAULTS = {
-    "data": {
-        "v_sigma": 10.0,
-    },
-    "inverse": {
-        "lr": 5.0e-4,
-        "lr_schedule": [],
-        "dirichlet_ids": [1],
-        "fixed_n": 3.0,
-        "smooth_boundary": False,
-        "bfgs_maxcor": 50,
-        "opt_init_seed": 744,
-        "opt_init_amp": 0.05,
-        "hyper_params": [],
-    },
-    "matrix": {
-        "spectral": False,
-        "spectral_L_min": 10.0,
-        "use_ref": False,
-        "mask": "none",
-    },
-    "prep": {},
-    "vi": {
-        "hess_reg": 1.0,
-    },
-}
-
 
 def _merge_dicts(base: dict, override: dict) -> dict:
     merged = deepcopy(base)
@@ -86,10 +59,6 @@ def _load_cfg_dict(path: Path, chain: tuple[Path, ...]) -> dict:
     return _merge_dicts(base_cfg, data)
 
 
-def load_cfg_file(path: str | Path) -> DictToStruct:
-    return DictToStruct(_load_cfg_dict(Path(path), ()))
-
-
 def _to_dict(cfg: DictToStruct | dict) -> dict:
     if isinstance(cfg, DictToStruct):
         return cfg.todict()
@@ -105,26 +74,6 @@ def _get_path(data: dict, path: str, default=_MISSING):
     return ref
 
 
-def _set_path(data: dict, path: str, value) -> None:
-    ref = data
-    keys = path.split(".")
-    for key in keys[:-1]:
-        ref = ref.setdefault(key, {})
-    ref[keys[-1]] = value
-
-
-def _apply_defaults(data: dict, defaults: dict, prefix: str = "") -> None:
-    for key, value in defaults.items():
-        path = f"{prefix}.{key}" if prefix else key
-        existing = _get_path(data, path)
-        if isinstance(value, dict):
-            if existing is _MISSING:
-                _set_path(data, path, {})
-            _apply_defaults(data, value, path)
-        elif existing is _MISSING:
-            _set_path(data, path, deepcopy(value))
-
-
 def _is_sequence(value: Any) -> bool:
     return isinstance(value, (list, tuple))
 
@@ -137,49 +86,21 @@ def primary_penalty(penalty):
     return penalty
 
 
-def normalize_cfg(cfg: DictToStruct | dict) -> DictToStruct:
-    data = _to_dict(cfg)
+def _normalize_loaded_cfg(data: dict) -> dict:
+    # Strict contract: all defaults and required structure live in TOML.
+    # Keep the hook so load_cfg_file() remains the one entry point.
+    return deepcopy(data)
 
-    for section in ("data", "inverse", "model", "matrix", "prep", "vi"):
-        data.setdefault(section, {})
 
-    # Accept older configs that stored the inverse mesh under [model].
-    inverse_meshfile = _get_path(data, "inverse.meshfile")
-    model_meshfile = _get_path(data, "model.meshfile")
-    if inverse_meshfile is _MISSING and model_meshfile is not _MISSING:
-        _set_path(data, "inverse.meshfile", model_meshfile)
-
-    # Prep workflows often run on a different mesh than the inverse path.
-    # Prefer an explicit prep mesh when present, otherwise fall back to the
-    # legacy model mesh and finally the inverse mesh.
-    prep_meshfile = _get_path(data, "prep.meshfile")
-    if prep_meshfile is _MISSING:
-        if model_meshfile is not _MISSING:
-            _set_path(data, "prep.meshfile", model_meshfile)
-        elif inverse_meshfile is not _MISSING:
-            _set_path(data, "prep.meshfile", inverse_meshfile)
-
-    # Canonicalize penalties onto the plural keys used in configs.
-    for suffix in ("B", "n"):
-        singular_path = f"inverse.penalty_{suffix}"
-        plural_path = f"inverse.penalties_{suffix}"
-        singular = _get_path(data, singular_path)
-        plural = _get_path(data, plural_path)
-
-        if plural is _MISSING and singular is not _MISSING:
-            _set_path(data, plural_path, deepcopy(singular))
-            plural = singular
-
-        if plural is not _MISSING:
-            _set_path(data, singular_path, primary_penalty(plural))
-
-    _apply_defaults(data, _NORMALIZED_DEFAULTS)
+def load_cfg_file(path: str | Path, *, normalize: bool = True) -> DictToStruct:
+    data = _load_cfg_dict(Path(path), ())
+    if normalize:
+        data = _normalize_loaded_cfg(data)
     return DictToStruct(data)
 
 
 def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictToStruct:
-    cfg = normalize_cfg(cfg)
-    data = cfg.todict()
+    data = _to_dict(cfg)
     errors = []
 
     def require(path: str):
@@ -201,11 +122,13 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
         "inverse.B_norm_type",
         "inverse.n_norm_type",
         "inverse.dirichlet_ids",
+        "inverse.lr_schedule",
         "inverse.smooth_boundary",
         "inverse.opt_type",
         "inverse.n_iter",
         "inverse.opt_init_seed",
         "inverse.opt_init_amp",
+        "inverse.hyper_params",
         "model.B_min",
         "model.B_max",
         "model.n_min",
@@ -242,23 +165,15 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
         elif not isinstance(penalty, Number):
             errors.append(f"`{path}` must be a number or a numeric list.")
 
-    inverse_meshfile = _get_path(data, "inverse.meshfile")
-    model_meshfile = _get_path(data, "model.meshfile", inverse_meshfile)
-    if model_meshfile is not _MISSING and inverse_meshfile != model_meshfile:
-        errors.append(
-            "`model.meshfile` and `inverse.meshfile` disagree. Use "
-            "`inverse.meshfile` as the canonical golden-path key."
-        )
-
-    hyper_params = _get_path(data, "inverse.hyper_params", [])
+    hyper_params = _get_path(data, "inverse.hyper_params")
     if not _is_sequence(hyper_params):
         errors.append("`inverse.hyper_params` must be a list.")
     elif len(hyper_params) not in _SUPPORTED_HYPERPARAM_LENGTHS:
         errors.append("`inverse.hyper_params` must have length 0, 2, or 3.")
 
     if len(hyper_params) == 0:
-        for path in ("inverse.penalty_B", "inverse.penalty_n"):
-            penalty = _get_path(data, path)
+        for path in ("inverse.penalties_B", "inverse.penalties_n"):
+            penalty = primary_penalty(_get_path(data, path))
             if not isinstance(penalty, Number):
                 errors.append(
                     f"`{path}` must resolve to a numeric primary penalty when "
@@ -306,7 +221,7 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
     if errors:
         raise ConfigValidationError("\n".join(errors))
 
-    return cfg
+    return DictToStruct(data)
 
 
 # end of file

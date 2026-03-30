@@ -23,8 +23,7 @@ class WorkflowContext:
 
 def load_config(args, extra_args):
     cfg = cu.load_cfg_file(args.cfg)
-    cfg = jbao.utils.update_cfg_with_extra(cfg, extra_args)
-    return cu.normalize_cfg(cfg)
+    return jbao.utils.update_cfg_with_extra(cfg, extra_args)
 
 
 def apply_calibration_overrides(cfg, args, calibration_file="calibration.toml"):
