@@ -7,10 +7,6 @@ add_noise = false
 u_sigma = 0.5
 v_sigma = 0.5
 
-[matrix]
-use_ref = true
-base = 1.5
-
 [sim]
 meshfile = "../aux/rutford_simpler_1km.msh"
 

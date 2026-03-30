@@ -6,6 +6,10 @@ output_dir = "outputs_sinusoidal_lowfreq"
 [data]
 u_sigma = 0.5
 
+[matrix]
+use_ref = true
+base = 1.5
+
 [inverse]
 n_iter = 1000
 nll_scale = 2500.0

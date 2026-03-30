@@ -6,11 +6,18 @@ shelf_coords_file = "aux/coords_simplified_inverse_shelf.txt"
 [data]
 u_sigma = 4.0
 
-# Prep defaults live in default_prep_config.toml.
 [matrix]
 spectral = false
 use_ref = false
 mask = "none"
+
+supports_B = [5.5e3, 11.0e3, 22.0e3]
+min_strain_B = [0.0, 0.0, 0.0]
+
+supports_n = [5.5e3, 11.0e3, 22.0e3]
+min_strain_n = [0.0, 0.0, 0.0]
+
+base = 1.0
 
 [model]
 B_min = 0.1

@@ -3,9 +3,6 @@ extends = "default_prep_config.toml"
 output_dir = "outputs_margin_both"
 velocity_scale = 0.9
 
-[matrix]
-use_ref = true
-
 [sim]
 exp_in = 2.25
 exp_out = 2.25
