@@ -50,6 +50,11 @@ norm_scale = 3.0
 opt_type = "bfgs"
 opt_init_seed = 744
 opt_init_amp = 0.05
+infer_boundary_velocity = false
+boundary_n_basis = 20
+boundary_spline_degree = 3
+boundary_sigma_alpha = 50.0
+boundary_corr_length = 150.0
 
 # Default: good for the margin experiments
 #hyper_params = [4.0, 3.0, 0.0]

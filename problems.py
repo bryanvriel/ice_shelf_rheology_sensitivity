@@ -53,6 +53,7 @@ class IceShelfProblem:
         use_strain=False,
         fixed_exponent=False,
         temporal_cov=False,
+        infer_boundary_velocity=False,
     ):
 
         # Initialize functional spaces
@@ -102,7 +103,9 @@ class IceShelfProblem:
         # Initialize function spaces for observations (potentially time-dependent)
         # These need to be loaded prior to any forward solves
         self.h = firedrake.Function(self.Q)
-        self.u = []
+        self.u_obs = []
+        self.u_bc_ref = []
+        self.u_bc = []
         self.σ_u = []
         self.e_xx = []
         self.e_xy = []
@@ -120,15 +123,32 @@ class IceShelfProblem:
         self.temporal_cov = temporal_cov
 
         self.fixed_exponent = fixed_exponent
+        self.infer_boundary_velocity = infer_boundary_velocity
+
+        self.boundary_node_indices = None
+        self.boundary_coords = None
+        self.boundary_s = None
 
         self._obs_init = False
         self._solver_init = False
 
     @property
+    def u(self):
+        """Backward-compatible alias for observed velocity fields."""
+        return self.u_obs
+
+    @u.setter
+    def u(self, value):
+        self.u_obs = value
+
+    @property
     def controls(self):
-        if self.fixed_exponent:
-            return (self.θ_B,)
-        return (self.θ_B, self.θ_n)
+        controls = [self.θ_B]
+        if not self.fixed_exponent:
+            controls.append(self.θ_n)
+        if self.infer_boundary_velocity:
+            controls.extend(self.u_bc)
+        return tuple(controls)
 
     @controls.setter
     def controls(self, value):
@@ -168,7 +188,9 @@ class IceShelfProblem:
         time_ind:
             List of time indices to load. If ``None``, all epochs are used.
         """
-        self.u = []
+        self.u_obs = []
+        self.u_bc_ref = []
+        self.u_bc = []
         self.σ_u = []
         self.e_xx = []
         self.e_xy = []
@@ -219,7 +241,9 @@ class IceShelfProblem:
             #_interp_field(e_yy[k], grid_coords, e_yy_k)
 
             # Append to lists
-            self.u.append(u_k)
+            self.u_obs.append(u_k)
+            self.u_bc_ref.append(u_k.copy(deepcopy=True))
+            self.u_bc.append(u_k.copy(deepcopy=True))
             self.σ_u.append(σ_k)
             #self.e_xx.append(e_xx_k)
             #self.e_xy.append(e_xy_k)
@@ -227,7 +251,9 @@ class IceShelfProblem:
 
         self._obs_init = True
 
-    def smooth_boundaries(self, alpha_mag=3.0e3, alpha_theta=4.0e3):
+    def _init_boundary_geometry(self):
+        if self.boundary_node_indices is not None:
+            return
 
         # Get boundary coordinates
         bc = firedrake.DirichletBC(self.V, 0, "on_boundary")
@@ -247,24 +273,36 @@ class IceShelfProblem:
         ccw_order = np.argsort(angles)
         boundary_node_indices = boundary_node_indices[ccw_order]
         edge_coords = self.coords[boundary_node_indices]
-        s_edge = compute_path_length(edge_coords[:, 0], edge_coords[:, 1])
+
         self.boundary_node_indices = boundary_node_indices
+        self.boundary_coords = edge_coords
+        self.boundary_s = compute_path_length(edge_coords[:, 0], edge_coords[:, 1])
+
+    def smooth_boundaries(self, alpha_mag=3.0e3, alpha_theta=4.0e3):
+        self._init_boundary_geometry()
+        boundary_node_indices = self.boundary_node_indices
+        s_edge = self.boundary_s
 
         def _smooth(ref_array, alpha):
             bvals = ref_array
             smooth_vals = helmholtz_1d_nonuniform(s_edge, bvals, alpha)
             return bvals, smooth_vals
 
-        # Smooth the boundary data
+        # Smooth the boundary-condition reference, leaving observations untouched.
         for k in range(self.Nt):
-            u = self.u[k].dat.data_ro[boundary_node_indices, :]
+            self.u_bc_ref[k].assign(self.u_obs[k])
+            self.u_bc[k].assign(self.u_obs[k])
+
+            u = self.u_obs[k].dat.data_ro[boundary_node_indices, :]
             mag = np.linalg.norm(u, axis=1)
             theta = np.degrees(np.arctan2(u[:, 1], u[:, 0]))
             mag, mag_smooth = _smooth(mag, alpha_mag)
             theta, theta_smooth = _smooth(theta, alpha_theta)
             u = mag_smooth * np.cos(np.radians(theta_smooth))
             v = mag_smooth * np.sin(np.radians(theta_smooth))
-            self.u[k].dat.data[boundary_node_indices] = np.column_stack((u, v))
+            u_smooth = np.column_stack((u, v))
+            self.u_bc_ref[k].dat.data[boundary_node_indices] = u_smooth
+            self.u_bc[k].dat.data[boundary_node_indices] = u_smooth
 
     def load_rheology(self, dirname, n_exp=None):
         print('Loading true rheology')
@@ -358,6 +396,32 @@ class IceShelfProblem:
         if not self._solver_init:
             raise RuntimeError("Solvers must be initialized before running the forward model.")
 
+    def split_controls(self, params):
+        params = tuple(params)
+
+        if self.fixed_exponent:
+            if len(params) < 1:
+                raise ValueError("Expected at least one control for fixed-exponent mode.")
+            θ_B = params[0]
+            θ_n = self.θ_n
+            offset = 1
+        else:
+            if len(params) < 2:
+                raise ValueError("Expected at least two controls for joint rheology mode.")
+            θ_B, θ_n = params[:2]
+            offset = 2
+
+        if self.infer_boundary_velocity:
+            bc_controls = list(params[offset:])
+            if len(bc_controls) != self.Nt:
+                raise ValueError(
+                    f"Expected {self.Nt} boundary-velocity controls, got {len(bc_controls)}."
+                )
+        else:
+            bc_controls = self.u_bc
+
+        return θ_B, θ_n, bc_controls
+
     def forward(self, params):
         self._check_forward_ready()
         if self.fixed_exponent:
@@ -372,7 +436,7 @@ class IceShelfProblem:
     def _forward_joint(self, params):
 
         # Unpack and un-normalize parameters
-        θ_B, θ_n = params
+        θ_B, θ_n, bc_controls = self.split_controls(params)
         n_exp = assemble(firedrake.interpolate(self._inv_norm_n(θ_n), self.Q))
         B = assemble(firedrake.interpolate(self._inv_norm_B(θ_B), self.Q))
 
@@ -381,7 +445,7 @@ class IceShelfProblem:
         for k in range(self.Nt):
             u_pred.append(
                 self.solvers[k].diagnostic_solve(
-                    velocity=self.u[k],
+                    velocity=bc_controls[k],
                     thickness=self.h,
                     rigidity=B,
                     flow_law_exponent=n_exp,
@@ -391,7 +455,7 @@ class IceShelfProblem:
         return u_pred
 
     def _forward_fixed_exponent(self, params):
-        θ_B = params[0]
+        θ_B, _, bc_controls = self.split_controls(params)
         B = assemble(firedrake.interpolate(self._inv_norm_B(θ_B), self.Q))
         n_exp = assemble(firedrake.interpolate(self._inv_norm_n(self.θ_n), self.Q))
 
@@ -400,7 +464,7 @@ class IceShelfProblem:
         for k in range(self.Nt):
             u_pred.append(
                 self.solvers[k].diagnostic_solve(
-                    velocity=self.u[k],
+                    velocity=bc_controls[k],
                     thickness=self.h,
                     rigidity=B,
                     flow_law_exponent=n_exp,
@@ -412,7 +476,7 @@ class IceShelfProblem:
     def _data_nll_independent(self, u_pred):
         misfits = []
         for k in range(self.Nt):
-            du = u_pred[k] - self.u[k]
+            du = u_pred[k] - self.u_obs[k]
             misfits.append(
                 (du[0] / self.σ_u[k][0])**2 + (du[1] / self.σ_u[k][1])**2
             )
@@ -433,7 +497,7 @@ class IceShelfProblem:
         rx = []
         ry = []
         for k in range(Nt):
-            du = u_pred[k] - self.u[k]
+            du = u_pred[k] - self.u_obs[k]
             rx.append(du[0] / self.σ_u[k][0])  # U component, whitened
             ry.append(du[1] / self.σ_u[k][1])  # V component, whitened
 
@@ -449,7 +513,7 @@ class IceShelfProblem:
     def reset_solver(self):
         for k in range(self.Nt):
             self.solvers[k]._diagnostic_solver.setup(
-                velocity=self.u[k],
+                velocity=self.u_bc[k],
                 thickness=self.h,
                 rigidity=self.θ_B,
                 flow_law_exponent=self.θ_n,

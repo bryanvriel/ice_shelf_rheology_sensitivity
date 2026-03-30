@@ -21,7 +21,7 @@ from .config_utilities import validate_cfg
 from . import models
 from .problems import make_mesh, IceShelfProblem
 from .objectives import PosteriorObjective, DataObjective
-from .fields import create_rheology_field
+from .fields import boundary_inference_enabled, create_inference_field
 from .utilities import NumpyConverter
 
 
@@ -42,9 +42,6 @@ def initialize_objects(
 
     outdir = cfg.output_dir
 
-    # Create rheology field
-    field = create_rheology_field(cfg, hyper_params=cfg.inverse.hyper_params)
-
     # Initialize a firedrake -> numpy function converter
     converter = NumpyConverter(
         coord_file=data_file,
@@ -52,6 +49,11 @@ def initialize_objects(
     )
 
     if data_file is None:
+        if boundary_inference_enabled(cfg):
+            raise ValueError(
+                "Boundary-velocity inference requires `data_file` so boundary metadata can be built."
+            )
+        field = create_inference_field(cfg, hyper_params=cfg.inverse.hyper_params)
         return field, converter
 
     # Make mesh
@@ -66,6 +68,7 @@ def initialize_objects(
         n_norm=cfg.inverse.n_norm_type,
         default_vel_error=cfg.data.u_sigma,
         dirichlet_ids=cfg.inverse.dirichlet_ids,
+        infer_boundary_velocity=boundary_inference_enabled(cfg),
     )
     if cfg.inverse.joint:
         problem = IceShelfProblem(cfg, mesh, **kwargs)
@@ -80,6 +83,13 @@ def initialize_objects(
         problem.smooth_boundaries()
     problem.init_solvers()
 
+    # Create latent-to-control field after the problem is initialized
+    field = create_inference_field(
+        cfg,
+        problem=problem,
+        hyper_params=cfg.inverse.hyper_params,
+    )
+
     # Create the optimization objective object
     obj_scale = obj_scale or cfg.inverse.objective_scale
     if data_obj:
@@ -88,6 +98,69 @@ def initialize_objects(
         objective = PosteriorObjective(field, problem, scale=obj_scale)
 
     return field, problem, objective, converter
+
+
+def inference_metadata(field):
+    n_total = int(field.N)
+    n_rheo = int(getattr(field, "N_rheo", n_total))
+    n_B = int(getattr(field, "N_B", n_rheo))
+    n_n = int(getattr(field, "N_n", max(0, n_rheo - n_B)))
+    metadata = {
+        "infer_boundary_velocity": np.int8(hasattr(field, "epoch_alpha_slices")),
+        "n_params_total": np.int64(n_total),
+        "n_params_rheology": np.int64(n_rheo),
+        "n_params_B": np.int64(n_B),
+        "n_params_n": np.int64(n_n),
+        "z_B_start": np.int64(0),
+        "z_B_stop": np.int64(n_B),
+        "z_n_start": np.int64(n_B),
+        "z_n_stop": np.int64(n_B + n_n),
+    }
+
+    if hasattr(field, "epoch_alpha_slices"):
+        alpha_x_start = np.zeros((field.Nt,), dtype=np.int64)
+        alpha_x_stop = np.zeros((field.Nt,), dtype=np.int64)
+        alpha_y_start = np.zeros((field.Nt,), dtype=np.int64)
+        alpha_y_stop = np.zeros((field.Nt,), dtype=np.int64)
+        for k in range(field.Nt):
+            sx, sy = field.epoch_alpha_slices(k)
+            alpha_x_start[k] = sx.start
+            alpha_x_stop[k] = sx.stop
+            alpha_y_start[k] = sy.start
+            alpha_y_stop[k] = sy.stop
+
+        metadata.update(
+            {
+                "n_boundary_epochs": np.int64(field.Nt),
+                "boundary_n_basis": np.int64(field.n_basis),
+                "boundary_spline_degree": np.int64(field.degree),
+                "boundary_length": np.float64(field.boundary_length),
+                "boundary_coeff_positions": np.asarray(field.coeff_positions),
+                "z_alpha_x_start": alpha_x_start,
+                "z_alpha_x_stop": alpha_x_stop,
+                "z_alpha_y_start": alpha_y_start,
+                "z_alpha_y_stop": alpha_y_stop,
+            }
+        )
+
+    return metadata
+
+
+def print_parameter_summary(field, printer=print):
+    metadata = inference_metadata(field)
+    printer("Number of parameters:", int(metadata["n_params_total"]))
+    printer(
+        "Rheology blocks:",
+        f"B={int(metadata['n_params_B'])}",
+        f"n={int(metadata['n_params_n'])}",
+    )
+    if int(metadata["infer_boundary_velocity"]):
+        printer(
+            "Boundary blocks:",
+            f"epochs={int(metadata['n_boundary_epochs'])}",
+            f"basis={int(metadata['boundary_n_basis'])}",
+            f"per-epoch params={2 * int(metadata['boundary_n_basis'])}",
+        )
 
 # ---------------------------------------------------------------------------
 # Inversion tools
@@ -409,11 +482,7 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
 
     objective.set_control_array(θ_np)
     controls = objective.copy_controls()
-    if problem.fixed_exponent:
-        θ_B = controls[0]
-        θ_n = problem.θ_n
-    else:
-        θ_B, θ_n = controls
+    θ_B, θ_n, bc_controls = problem.split_controls(controls)
     preds = problem.forward(controls)
 
     # Output coordinates
@@ -435,6 +504,18 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
 
     for i, p in enumerate(preds):
         out_preds[f"u{i}"] = converter(p)
+
+    for i, bc in enumerate(bc_controls):
+        out_preds[f"u_bc{i}"] = converter(bc)
+
+    if hasattr(field, "epoch_alpha_slices"):
+        out_preds["boundary_s"] = np.asarray(problem.boundary_s)
+        out_preds["boundary_L"] = np.asarray(field.boundary_length)
+        out_preds["boundary_coeff_positions"] = np.asarray(field.coeff_positions)
+        for i in range(field.Nt):
+            sx, sy = field.epoch_alpha_slices(i)
+            out_preds[f"alpha_x{i}"] = np.asarray(z[sx])
+            out_preds[f"alpha_y{i}"] = np.asarray(z[sy])
 
     return out_preds
 

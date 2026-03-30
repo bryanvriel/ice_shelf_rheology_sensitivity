@@ -24,6 +24,10 @@ def main(cfg, args):
     ctx = wu.initialize_workflow(cfg, args)
     print("Data file:", ctx.data_file)
     print("Output file:", ctx.outfile)
+    metadata = tu.inference_metadata(ctx.field)
+    if int(metadata["infer_boundary_velocity"]):
+        metadata["boundary_s"] = np.asarray(ctx.problem.boundary_s)
+        metadata["boundary_node_indices"] = np.asarray(ctx.problem.boundary_node_indices)
 
     # Restore from previous
     if args.restore:
@@ -41,7 +45,7 @@ def main(cfg, args):
         z = ctx.cfg.inverse.opt_init_amp * rng.standard_normal((ctx.field.N,))
         stage = 1
         file_mode = "w"
-    print("Number of parameters:", z.size)
+    tu.print_parameter_summary(ctx.field)
 
     # Create optimizer
     if ctx.cfg.inverse.opt_type != "bfgs":
@@ -87,7 +91,7 @@ def main(cfg, args):
                 preds,
                 group=f"stage{stage}",
                 mode=file_mode,
-                extra_data={"losses": losses},
+                extra_data={"losses": losses, **metadata},
             )
 
             # Also write optimizer state

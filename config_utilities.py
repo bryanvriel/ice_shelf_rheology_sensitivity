@@ -227,6 +227,45 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
     if not _is_sequence(dirichlet_ids) or len(dirichlet_ids) == 0:
         errors.append("`inverse.dirichlet_ids` must be a non-empty list.")
 
+    infer_boundary_velocity = _get_path(data, "inverse.infer_boundary_velocity", False)
+    if infer_boundary_velocity:
+        for path in (
+            "inverse.boundary_n_basis",
+            "inverse.boundary_spline_degree",
+            "inverse.boundary_sigma_alpha",
+            "inverse.boundary_corr_length",
+        ):
+            if _get_path(data, path, _MISSING) is _MISSING:
+                errors.append(
+                    f"Missing required config key `{path}` when "
+                    "`inverse.infer_boundary_velocity = true`."
+                )
+
+        n_basis = _get_path(data, "inverse.boundary_n_basis", None)
+        degree = _get_path(data, "inverse.boundary_spline_degree", None)
+        sigma_alpha = _get_path(data, "inverse.boundary_sigma_alpha", None)
+        corr_length = _get_path(data, "inverse.boundary_corr_length", None)
+
+        if not isinstance(n_basis, Number) or int(n_basis) != n_basis or n_basis < 2:
+            errors.append("`inverse.boundary_n_basis` must be an integer >= 2.")
+        if not isinstance(degree, Number) or int(degree) != degree or degree < 0:
+            errors.append("`inverse.boundary_spline_degree` must be a non-negative integer.")
+        if (
+            isinstance(n_basis, Number)
+            and isinstance(degree, Number)
+            and int(n_basis) == n_basis
+            and int(degree) == degree
+            and n_basis < degree + 1
+        ):
+            errors.append(
+                "`inverse.boundary_n_basis` must be at least "
+                "`inverse.boundary_spline_degree + 1`."
+            )
+        if not isinstance(sigma_alpha, Number) or sigma_alpha <= 0:
+            errors.append("`inverse.boundary_sigma_alpha` must be positive.")
+        if not isinstance(corr_length, Number) or corr_length <= 0:
+            errors.append("`inverse.boundary_corr_length` must be positive.")
+
     lr_schedule = _get_path(data, "inverse.lr_schedule", [])
     if not _is_sequence(lr_schedule):
         errors.append("`inverse.lr_schedule` must be a list of [step, lr] pairs.")

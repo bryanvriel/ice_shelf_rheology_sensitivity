@@ -1,7 +1,8 @@
 #-*- coding: utf-8 -*-
 
 import numpy as np
-from scipy.linalg import solve_triangular
+from scipy.interpolate import BSpline
+from scipy.linalg import block_diag, solve_triangular
 import h5py
 
 import jax
@@ -51,6 +52,89 @@ def mvn_nll(z: jnp.ndarray, S: jnp.ndarray) -> float:
     return 0.5 * jnp.dot(z, S @ z)
 
 mvn_nll_and_grad = jax.value_and_grad(mvn_nll)
+
+
+def periodic_bspline_design_matrix(s, L, n_basis, degree=3):
+    """
+    Build a periodic B-spline design matrix A such that
+        profile(s) = A @ alpha
+    where alpha has length n_basis.
+    """
+    s = np.asarray(s, dtype=float)
+    p = degree
+    n = n_basis
+    h = L / n
+
+    # Wrap all coordinates into [0, L)
+    s = np.mod(s, L)
+
+    # Uniform extended knot vector
+    knots = np.arange(-p, n + p + 1, dtype=float) * h
+
+    # Ordinary spline design matrix with n+p coefficients
+    B_open = BSpline.design_matrix(s, knots, p, extrapolate=False).toarray()
+
+    # Wrap matrix: c_ext = P @ alpha, with c_{n+r} = c_r
+    P = np.zeros((n + p, n))
+    P[:n, :] = np.eye(n)
+    P[n:, :p] = np.eye(p)
+
+    # Periodic design matrix
+    A = B_open @ P
+    return A
+
+
+def periodic_bspline_coefficient_prior_covariance_corrlen(
+    n,
+    L,
+    sigma_alpha,
+    corr_length,
+    jitter=1e-10,
+    return_positions=False,
+):
+    """
+    Construct a periodic Gaussian prior covariance for spline coefficients
+    using a periodic squared-exponential kernel on the closed boundary.
+    """
+    if n < 2:
+        raise ValueError("n must be at least 2")
+    if L <= 0:
+        raise ValueError("L must be positive")
+    if sigma_alpha <= 0:
+        raise ValueError("sigma_alpha must be positive")
+    if corr_length <= 0:
+        raise ValueError("corr_length must be positive")
+
+    # Coefficient centers, uniformly spaced around the closed boundary
+    s = np.linspace(0.0, L, n, endpoint=False)
+
+    # Pairwise differences
+    ds = s[:, None] - s[None, :]
+
+    # Periodic squared-exponential kernel
+    Sigma = sigma_alpha**2 * np.exp(
+        -2.0 * np.sin(np.pi * ds / L)**2 / corr_length**2
+    )
+
+    if jitter > 0.0:
+        Sigma = Sigma + jitter * np.eye(n)
+
+    if return_positions:
+        return Sigma, s
+    return Sigma
+
+
+def closed_boundary_length(coords: np.ndarray) -> float:
+    coords = np.asarray(coords, dtype=float)
+    if coords.ndim != 2 or coords.shape[0] < 2:
+        raise ValueError("coords must have shape (n_points, 2) with n_points >= 2")
+
+    diffs = np.diff(np.vstack((coords, coords[:1])), axis=0)
+    return float(np.sqrt((diffs**2).sum(axis=1)).sum())
+
+
+def boundary_inference_enabled(cfg) -> bool:
+    return bool(getattr(cfg.inverse, "infer_boundary_velocity", False))
 
 
 def create_rheology_field(cfg, hyper_params=None):
@@ -105,6 +189,20 @@ def create_rheology_field(cfg, hyper_params=None):
 
     # Create and return joint field
     return RheologyFieldLambdaMatrix(matfile, Λ, mask=cfg.matrix.mask)
+
+
+def create_inference_field(cfg, problem=None, hyper_params=None):
+    rheology_field = create_rheology_field(cfg, hyper_params=hyper_params)
+
+    if not boundary_inference_enabled(cfg):
+        return rheology_field
+
+    if problem is None:
+        raise ValueError(
+            "Boundary-velocity inference requires a problem instance with loaded data."
+        )
+
+    return JointBoundaryRheologyField(cfg, rheology_field, problem)
 
 
 def precondition_matrix(G, S):
@@ -333,6 +431,196 @@ class RheologyFieldLambdaMatrix(eqx.Module):
         self, z_field: jnp.ndarray
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Computes the prior NLL and its gradient for this field."""
+        nll, grad = mvn_nll_and_grad(z_field, self.S)
+        return nll, grad
+
+    def prior_precision(self):
+        return self.S
+
+
+class JointBoundaryRheologyField(eqx.Module):
+    rheology_field: eqx.Module
+    A: jnp.ndarray
+    S: jnp.ndarray
+    bc_reference: jnp.ndarray
+    boundary_nodes: jnp.ndarray
+    coeff_positions: jnp.ndarray
+    matrix_data: dict
+
+    output_size_rheology: int = eqx.field(static=True)
+    bc_size: int = eqx.field(static=True)
+    bc_shape: tuple = eqx.field(static=True)
+    N_rheo: int = eqx.field(static=True)
+    N_B: int = eqx.field(static=True)
+    N_n: int = eqx.field(static=True)
+    Nt: int = eqx.field(static=True)
+    n_basis: int = eqx.field(static=True)
+    degree: int = eqx.field(static=True)
+    N: int = eqx.field(static=True)
+    M: int = eqx.field(static=True)
+    boundary_length: float = eqx.field(static=True)
+
+    def __init__(self, cfg, rheology_field, problem):
+        if problem.boundary_node_indices is None or problem.boundary_coords is None:
+            problem._init_boundary_geometry()
+
+        n_basis = int(cfg.inverse.boundary_n_basis)
+        degree = int(cfg.inverse.boundary_spline_degree)
+        sigma_alpha = float(cfg.inverse.boundary_sigma_alpha)
+        corr_length = float(cfg.inverse.boundary_corr_length)
+
+        if len(problem.u_bc_ref) == 0:
+            raise ValueError("Problem does not have any boundary-condition reference fields.")
+
+        bc_shape = tuple(problem.u_bc_ref[0].dat.data_ro.shape)
+        if len(bc_shape) != 2 or bc_shape[1] != 2:
+            raise NotImplementedError(
+                "Boundary-velocity inference currently requires 2D vector velocity fields."
+            )
+
+        boundary_coords = np.asarray(problem.boundary_coords, dtype=float)
+        boundary_s = np.asarray(problem.boundary_s, dtype=float)
+        boundary_L = closed_boundary_length(boundary_coords)
+
+        A_np = periodic_bspline_design_matrix(
+            boundary_s,
+            boundary_L,
+            n_basis=n_basis,
+            degree=degree,
+        )
+        Sigma_alpha, coeff_positions = periodic_bspline_coefficient_prior_covariance_corrlen(
+            n=n_basis,
+            L=boundary_L,
+            sigma_alpha=sigma_alpha,
+            corr_length=corr_length,
+            return_positions=True,
+        )
+        Q_alpha = np.linalg.inv(make_spd(Sigma_alpha))
+
+        bc_reference = np.stack(
+            [u.dat.data_ro.ravel().copy() for u in problem.u_bc_ref],
+            axis=0,
+        )
+
+        rheology_zero = np.zeros((rheology_field.N,), dtype=float)
+        output_size_rheology = np.asarray(rheology_field(rheology_zero)).size
+
+        blocks = [np.asarray(rheology_field.S)]
+        for _ in range(problem.Nt):
+            blocks.extend((Q_alpha, Q_alpha))
+
+        self.rheology_field = rheology_field
+        self.A = jnp.asarray(A_np)
+        self.S = jnp.asarray(make_spd(block_diag(*blocks)))
+        self.bc_reference = jnp.asarray(bc_reference)
+        self.boundary_nodes = jnp.asarray(problem.boundary_node_indices, dtype=jnp.int32)
+        self.coeff_positions = jnp.asarray(coeff_positions)
+        self.matrix_data = getattr(rheology_field, "matrix_data", {})
+
+        self.output_size_rheology = int(output_size_rheology)
+        self.bc_size = int(np.prod(bc_shape))
+        self.bc_shape = bc_shape
+        self.N_rheo = rheology_field.N
+        self.N_B = int(getattr(rheology_field, "N_B", rheology_field.N))
+        self.N_n = int(getattr(rheology_field, "N_n", 0))
+        self.Nt = problem.Nt
+        self.n_basis = n_basis
+        self.degree = degree
+        self.N = self.N_rheo + 2 * self.Nt * self.n_basis
+        self.M = rheology_field.M
+        self.boundary_length = boundary_L
+
+    def epoch_alpha_slices(self, k: int):
+        offset = self.N_rheo + 2 * k * self.n_basis
+        return (
+            slice(offset, offset + self.n_basis),
+            slice(offset + self.n_basis, offset + 2 * self.n_basis),
+        )
+
+    def _boundary_control_from_alpha(
+        self,
+        ref_flat: jnp.ndarray,
+        alpha_x: jnp.ndarray,
+        alpha_y: jnp.ndarray,
+    ) -> jnp.ndarray:
+        bc = ref_flat.reshape(self.bc_shape)
+        delta_x = self.A @ alpha_x
+        delta_y = self.A @ alpha_y
+        bc = bc.at[self.boundary_nodes, 0].add(delta_x)
+        bc = bc.at[self.boundary_nodes, 1].add(delta_y)
+        return bc.reshape(-1)
+
+    def _boundary_tangent_from_alpha(
+        self,
+        alpha_x: jnp.ndarray,
+        alpha_y: jnp.ndarray,
+    ) -> jnp.ndarray:
+        tangent = jnp.zeros(self.bc_shape, dtype=alpha_x.dtype)
+        tangent = tangent.at[self.boundary_nodes, 0].set(self.A @ alpha_x)
+        tangent = tangent.at[self.boundary_nodes, 1].set(self.A @ alpha_y)
+        return tangent.reshape(-1)
+
+    @eqx.filter_jit
+    def __call__(self, z: jnp.ndarray) -> jnp.ndarray:
+        z_rheo = z[: self.N_rheo]
+        outputs = [self.rheology_field(z_rheo)]
+
+        for k in range(self.Nt):
+            sx, sy = self.epoch_alpha_slices(k)
+            outputs.append(
+                self._boundary_control_from_alpha(
+                    self.bc_reference[k],
+                    z[sx],
+                    z[sy],
+                )
+            )
+
+        return jnp.concatenate(outputs)
+
+    @eqx.filter_jit
+    def jvp(self, z_field: jnp.ndarray, v_field: jnp.ndarray) -> jnp.ndarray:
+        tangent_outputs = [self.rheology_field.jvp(z_field[: self.N_rheo], v_field[: self.N_rheo])]
+
+        for k in range(self.Nt):
+            sx, sy = self.epoch_alpha_slices(k)
+            tangent_outputs.append(
+                self._boundary_tangent_from_alpha(
+                    v_field[sx],
+                    v_field[sy],
+                )
+            )
+
+        return jnp.concatenate(tangent_outputs)
+
+    @eqx.filter_jit
+    def vjp(self, z_field: jnp.ndarray, v_field: jnp.ndarray) -> jnp.ndarray:
+        grad_parts = [
+            self.rheology_field.vjp(
+                z_field[: self.N_rheo],
+                v_field[: self.output_size_rheology],
+            )
+        ]
+
+        offset = self.output_size_rheology
+        for _ in range(self.Nt):
+            bc_grad = v_field[offset : offset + self.bc_size].reshape(self.bc_shape)
+            grad_parts.append(self.A.T @ bc_grad[self.boundary_nodes, 0])
+            grad_parts.append(self.A.T @ bc_grad[self.boundary_nodes, 1])
+            offset += self.bc_size
+
+        return jnp.concatenate(grad_parts)
+
+    @eqx.filter_jit
+    def prior_nll(
+        self, z_field: jnp.ndarray
+    ) -> tuple[jnp.ndarray]:
+        nll = mvn_nll(z_field, self.S)
+        return nll
+
+    @eqx.filter_jit
+    def prior_nll_and_grad(
+        self, z_field: jnp.ndarray
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
         nll, grad = mvn_nll_and_grad(z_field, self.S)
         return nll, grad
 

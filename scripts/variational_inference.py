@@ -12,6 +12,7 @@ import optax
 
 import schurflow.config_utilities as cu
 import schurflow.file_utilities as fu
+import schurflow.train_utilities as tu
 import schurflow.workflow_utils as wu
 from schurflow.vi import (
     SVIFullRankGaussian,
@@ -105,6 +106,11 @@ def main(cfg, args):
     mpi_print("Data file:", ctx.data_file)
     mpi_print("MAP file:", mapfile)
     mpi_print("Checkpoint file:", ctx.outfile)
+    tu.print_parameter_summary(ctx.field, printer=mpi_print)
+    metadata = tu.inference_metadata(ctx.field)
+    if int(metadata["infer_boundary_velocity"]):
+        metadata["boundary_s"] = np.asarray(ctx.problem.boundary_s)
+        metadata["boundary_node_indices"] = np.asarray(ctx.problem.boundary_node_indices)
 
     def compute_log_likelihood(x):
         try:
@@ -150,7 +156,15 @@ def main(cfg, args):
         if t % 10 == 0:
             elbo = logP[-1] - kl[-1]
             print(f"{t:5d} | {elbo:13.6f} | {logP[-1]:13.6f} | {kl[-1]:13.6f}")
-        extra = {"logP": logP, "kl": kl, "opt_state": opt_state, "key": key}
+        extra = {
+            "logP": logP,
+            "kl": kl,
+            "opt_state": opt_state,
+            "key": key,
+            "metadata": metadata,
+            "mapfile": mapfile,
+            "map_restore_group": map_restore_group,
+        }
         save_params(ctx.outfile, params, extra=extra)
 
     params, opt_state, loop_key, logP, kl = svi_model.fit(
@@ -165,7 +179,15 @@ def main(cfg, args):
     save_params(
         ctx.outfile,
         params,
-        extra={"logP": logP, "kl": kl, "opt_state": opt_state, "key": loop_key},
+        extra={
+            "logP": logP,
+            "kl": kl,
+            "opt_state": opt_state,
+            "key": loop_key,
+            "metadata": metadata,
+            "mapfile": mapfile,
+            "map_restore_group": map_restore_group,
+        },
     )
 
 

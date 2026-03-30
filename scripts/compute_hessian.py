@@ -85,9 +85,14 @@ def main(cfg, args):
         require_vi=True,
     )
     Nt = ctx.problem.Nt
+    metadata = tu.inference_metadata(ctx.field)
+    if int(metadata["infer_boundary_velocity"]):
+        metadata["boundary_s"] = np.asarray(ctx.problem.boundary_s)
+        metadata["boundary_node_indices"] = np.asarray(ctx.problem.boundary_node_indices)
 
     mpi_print("Data file:", ctx.data_file)
     mpi_print("Output file:", ctx.outfile)
+    tu.print_parameter_summary(ctx.field, printer=mpi_print)
 
     # Get restore stage
     _, restore_stage = wu.resolve_restore_stage(
@@ -100,6 +105,16 @@ def main(cfg, args):
     mpi_print(f"Restoring {restore_stage} from {ctx.outfile}")
     with h5py.File(ctx.outfile, "r") as fid:
         θ_map = fid[f"{restore_stage}/z"][()]
+
+    def _write_metadata(group, values):
+        for key, value in values.items():
+            if key in group:
+                del group[key]
+            group[key] = value
+
+    if rank == 0:
+        with h5py.File(ctx.outfile, "a") as fid:
+            _write_metadata(fid[f"{restore_stage}"], metadata)
 
     # Gradient test
     _, grad = ctx.objective(θ_map)
@@ -189,6 +204,30 @@ def main(cfg, args):
         group["x"] = ctx.converter.x_out
         group["y"] = ctx.converter.y_out
 
+        save_boundary = int(metadata["infer_boundary_velocity"])
+        if save_boundary:
+            n_basis = int(metadata["boundary_n_basis"])
+            alpha_x_out = group.create_dataset(
+                "alpha_x_samples",
+                (n_samples, Nt, n_basis),
+                "d",
+            )
+            alpha_y_out = group.create_dataset(
+                "alpha_y_samples",
+                (n_samples, Nt, n_basis),
+                "d",
+            )
+            u_bc_out = group.create_dataset(
+                "u_bc_samples",
+                (n_samples, Nt, *ctx.converter.out_shape),
+                "f",
+            )
+            v_bc_out = group.create_dataset(
+                "v_bc_samples",
+                (n_samples, Nt, *ctx.converter.out_shape),
+                "f",
+            )
+
         for i, k in enumerate(range(k0, k1)):
 
             sample = draw_laplace_sample(θ_map, sampler, seed=k)
@@ -208,6 +247,14 @@ def main(cfg, args):
             v_out[k, ...] = v_pred
             z_out[k, ...] = sample
             logp_out[k] = -1 * preds["final_loss"]
+
+            if save_boundary:
+                for j in range(Nt):
+                    alpha_x_out[k, j, :] = preds[f"alpha_x{j}"]
+                    alpha_y_out[k, j, :] = preds[f"alpha_y{j}"]
+                    u_bc_j, v_bc_j = preds[f"u_bc{j}"]
+                    u_bc_out[k, j, ...] = u_bc_j
+                    v_bc_out[k, j, ...] = v_bc_j
 
             if rank == 0 and i % 5 == 0:
                 print(f"Sample {i:3d} / {procN}")
