@@ -95,6 +95,15 @@ def periodic_bspline_coefficient_prior_covariance_corrlen(
     """
     Construct a periodic Gaussian prior covariance for spline coefficients
     using a periodic squared-exponential kernel on the closed boundary.
+
+    The correlation length is interpreted in the same physical arc-length
+    units as ``L``. The kernel is constructed from the periodic chord
+    distance
+
+        d_p(ds) = (L / pi) * sin(pi * ds / L),
+
+    so that for small separations it matches the standard squared-exponential
+    form exp(-0.5 * ds^2 / corr_length^2).
     """
     if n < 2:
         raise ValueError("n must be at least 2")
@@ -111,9 +120,10 @@ def periodic_bspline_coefficient_prior_covariance_corrlen(
     # Pairwise differences
     ds = s[:, None] - s[None, :]
 
-    # Periodic squared-exponential kernel
+    # Periodic squared-exponential kernel with physical arc-length scaling.
+    periodic_distance = (L / np.pi) * np.sin(np.pi * ds / L)
     Sigma = sigma_alpha**2 * np.exp(
-        -2.0 * np.sin(np.pi * ds / L)**2 / corr_length**2
+        -0.5 * (periodic_distance / corr_length)**2
     )
 
     if jitter > 0.0:
