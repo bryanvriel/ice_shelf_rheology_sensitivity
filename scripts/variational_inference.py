@@ -10,6 +10,7 @@ import jax
 import numpy as np
 import optax
 
+import schurflow.config_utilities as cu
 import schurflow.file_utilities as fu
 import schurflow.workflow_utils as wu
 from schurflow.vi import (
@@ -170,7 +171,12 @@ def main(cfg, args):
 
 if __name__ == "__main__":
     args, extra_args = parse()
-    cfg = wu.load_config(args, extra_args)
+    cfg = cu.load_config(
+        args.cfg,
+        extra_args=extra_args,
+        cal=getattr(args, "cal", False),
+        disc=getattr(args, "disc", False),
+    )
     main(cfg, args)
 
 

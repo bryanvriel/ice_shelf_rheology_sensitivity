@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 import tomllib
 
-from jbao.utils import DictToStruct
+from jbao.utils import DictToStruct, update_cfg_with_extra
 
 
 class ConfigValidationError(ValueError):
@@ -97,6 +97,41 @@ def load_cfg_file(path: str | Path, *, normalize: bool = True) -> DictToStruct:
     if normalize:
         data = _normalize_loaded_cfg(data)
     return DictToStruct(data)
+
+
+def apply_calibration_overrides(
+    cfg: DictToStruct,
+    *,
+    cal: bool = False,
+    disc: bool = False,
+    calibration_file: str | Path = "calibration.toml",
+) -> DictToStruct:
+    if not (cal or disc):
+        return cfg
+
+    cal_cfg = load_cfg_file(calibration_file).todict()[cfg.output_dir]
+    key = "calibration_hyper_params" if cal else "discovery_hyper_params"
+    return cfg.update("inverse.hyper_params", cal_cfg[key])
+
+
+def load_config(
+    path: str | Path,
+    *,
+    extra_args=None,
+    cal: bool = False,
+    disc: bool = False,
+    calibration_file: str | Path = "calibration.toml",
+    normalize: bool = True,
+) -> DictToStruct:
+    cfg = load_cfg_file(path, normalize=normalize)
+    if extra_args:
+        cfg = update_cfg_with_extra(cfg, extra_args)
+    return apply_calibration_overrides(
+        cfg,
+        cal=cal,
+        disc=disc,
+        calibration_file=calibration_file,
+    )
 
 
 def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictToStruct:

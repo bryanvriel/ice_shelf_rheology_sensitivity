@@ -5,12 +5,6 @@ from scipy.optimize import minimize
 from scipy.sparse.linalg import LinearOperator
 
 from tqdm import tqdm
-import datetime
-import warnings
-import shutil
-import h5py
-import sys
-import os
 
 import jax
 import jax.numpy as jnp
@@ -22,7 +16,6 @@ from firedrake import interpolate as fd_interpolate
 from firedrake import assemble, ln
 
 from iceinfer import Timer
-import rasterio
 
 from .config_utilities import validate_cfg
 from . import models
@@ -95,67 +88,6 @@ def initialize_objects(
         objective = PosteriorObjective(field, problem, scale=obj_scale)
 
     return field, problem, objective, converter
-
-
-def threshold_spectral_matrix(
-    L_min, target_std=0.2, apply_sensitivity=False, outdir=None
-):
-
-    # Read reference matrix data
-    matrix_data = {}
-    with h5py.File("aux/matrix_data_spectral.h5", "r") as fid:
-        x = fid["xp"][()]
-        y = fid["yp"][()]
-        evals = fid["evals"][()]
-        for name in ("B", "n"):
-            sub_data = {}
-            group = fid[name]
-            matrix_data[name] = {"G": group["G"][()], "G_grid": group["G_grid"][()]}
-
-    # Compute threshold
-    Θ = 1.0
-    L_min = 1e3 * L_min
-    σ_c = Θ / L_min
-    eval_thresh = (2 * np.pi / L_min) ** 2
-    mask = evals <= eval_thresh
-
-    # Read sensitivity if requested
-    if apply_sensitivity:
-        assert outdir is not None, "Must supply directory for reading sensitivity."
-        path = os.path.join(outdir, "mesh_data_sensitivity.h5")
-        with h5py.File(path, "r") as fid:
-            S = fid["s_mesh"][()]
-        SG = np.abs(S @ matrix_data["B"]["G"]) / np.sqrt(evals)
-        mask *= SG >= 1e8
-
-    # Mask the matrices and scale the columns
-    evals = evals[mask]
-    Sr = np.sum(1 / evals)
-    for name in ("B", "n"):
-
-        # Mask first
-        G = matrix_data[name]["G"]
-        G_grid = matrix_data[name]["G_grid"]
-        G = G[:, mask]
-        G_grid = G_grid[:, mask]
-
-        # Eigenvalue and length scale scaling
-        α = target_std / (σ_c * np.sqrt(Sr))
-        Np = G.shape[1]
-        for j in range(Np):
-            scale = α * σ_c / np.sqrt(evals[j])
-            G[:, j] *= scale
-            G_grid[:, j] *= scale
-
-        # Update dictionary
-        matrix_data[name]["G"] = G
-        matrix_data[name]["Gx"] = np.zeros_like(G)
-        matrix_data[name]["Gy"] = np.zeros_like(G)
-        matrix_data[name]["G_grid"] = G_grid
-        matrix_data[name]["S"] = np.eye(Np) * α**2
-
-    return matrix_data
-
 
 # ---------------------------------------------------------------------------
 # Inversion tools

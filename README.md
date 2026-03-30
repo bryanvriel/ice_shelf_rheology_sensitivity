@@ -10,7 +10,19 @@ The current implementation is tailored to estimating ice-shelf rheology, especia
 - combine that likelihood with prior information
 - optimize or approximate the posterior over the unknown field
 
-This README focuses on the core library and its design. It does not yet document the command-line workflows.
+The active command-line workflow is now organized around four scripts:
+
+- `scripts/optimize_MAP_joint.py` for MAP estimation
+- `scripts/compute_hessian.py` for Hessian analysis and Laplace-style sampling
+- `scripts/variational_inference.py` for the primary Gaussian VI path
+- `scripts/hvi_optimize.py` for the hierarchical VI variant
+
+Example configs live under `config/`. Each experiment now has:
+
+- one inference config such as `config/config_sinusoidal.toml`
+- one prep config such as `config/config_sinusoidal_prep.toml`
+
+Both use explicit `extends = ...` inheritance so the default values are discoverable in the TOML files themselves.
 
 ## What The Core Code Provides
 
@@ -100,6 +112,13 @@ The central object model follows this flow:
 - `objectives.py` combines priors and data into inverse-problem objectives
 - `vi.py`, `hvi.py`, `schur.py`, and `diagnostics.py` sit on top of that core to quantify uncertainty
 
+The active script path is intentionally thin:
+
+- `config_utilities.py` loads, merges, and validates configs
+- `workflow_utils.py` handles shared workflow bootstrap
+- `train_utilities.py` builds the model objects and exports predictions
+- the four scripts above contain only workflow-specific logic
+
 ## Core Modules
 
 ### `fields.py`
@@ -156,6 +175,13 @@ Despite its name, this is really a core workflow utility module.
 - converts model outputs to gridded arrays
 - generates saved prediction products from inferred parameters
 
+### `config_utilities.py` and `workflow_utils.py`
+
+These modules define the supported runtime path.
+
+- `config_utilities.py` loads configs through explicit `extends` chains, applies CLI overrides, applies calibration or discovery overrides, and validates the final config contract
+- `workflow_utils.py` resolves input and output filenames, restore stages, and shared workflow bootstrap for the active scripts
+
 ### `vi.py` and `hvi.py`
 
 These modules provide Gaussian variational inference tools.
@@ -189,7 +215,7 @@ These modules help answer the question: "How trustworthy is the inversion?"
 
 Several smaller modules support the core workflow:
 
-- `file_utilities.py`: HDF5 I/O, filename generation, state persistence
+- `file_utilities.py`: HDF5 I/O, results-path helpers, and optimizer state persistence
 - `utilities.py`: mesh-to-grid conversion and general helpers
 - `adjoint_utils.py`, `adjoint_utils_mesh.py`, `jax_utilities.py`: derivative and operator utilities
 - `strain.py`: strain-rate calculations from gridded velocity fields

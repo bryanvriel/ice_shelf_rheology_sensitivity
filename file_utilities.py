@@ -11,7 +11,6 @@ import sys
 import jax
 import re
 import os
-import warnings
 
 from jbao.utils import DictToStruct
 from typing import Any, Dict, Tuple
@@ -69,20 +68,6 @@ def common_parse() -> argparse.ArgumentParser:
         help="Force output filename. Default: None.",
     )
     return parser
-
-
-def generate_filename(cfg, loc, amp):
-    warnings.warn(
-        "generate_filename() is deprecated; use make_results_filename().",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    if amp == "None":
-        data_label = "data_inverse"
-    else:
-        data_label = f"data_inverse_perturbed_{loc}_amp-{amp}"
-    return make_results_filename(cfg, data_label=data_label)
-
 
 def data_filename(cfg, args):
     outdir = cfg.output_dir

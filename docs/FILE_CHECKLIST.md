@@ -8,94 +8,94 @@ It is organized by file and roughly grouped by phase. The intent is to make impl
 
 ### New helper module
 
-- [ ] Add a shared workflow helper module, likely `workflow_utils.py` or `script_utils.py`
-- [ ] Centralize:
-  - [ ] config parsing
-  - [ ] calibration/discovery override handling
-  - [ ] `data_file` resolution
-  - [ ] output filename resolution
-  - [ ] restore-stage resolution
-  - [ ] object construction through `train_utilities.initialize_objects`
+- [x] Add a shared workflow helper module, `workflow_utils.py`
+- [x] Centralize:
+  - [x] config parsing
+  - [x] calibration/discovery override handling
+  - [x] `data_file` resolution
+  - [x] output filename resolution
+  - [x] restore-stage resolution
+  - [x] object construction through `train_utilities.initialize_objects`
 
 ### `scripts/optimize_MAP_joint.py`
 
-- [ ] Remove duplicated setup logic that should live in the shared helper
-- [ ] Keep only MAP-specific logic in the script
-- [ ] Make restore behavior explicit and consistent with the shared helper
-- [ ] Keep callback logic small and focused on periodic save/checkpoint behavior
+- [x] Remove duplicated setup logic that should live in the shared helper
+- [x] Keep only MAP-specific logic in the script
+- [x] Make restore behavior explicit and consistent with the shared helper
+- [x] Keep callback logic small and focused on periodic save/checkpoint behavior
 
 ### `scripts/compute_hessian.py`
 
-- [ ] Fix missing imports and script bootstrap drift
-- [ ] Fix the broken `__main__` call
-- [ ] Replace duplicated setup logic with the shared helper
-- [ ] Reuse shared restore-stage and output-path logic
-- [ ] Keep only Hessian-specific behavior in the script
+- [x] Fix missing imports and script bootstrap drift
+- [x] Fix the broken `__main__` call
+- [x] Replace duplicated setup logic with the shared helper
+- [x] Reuse shared restore-stage and output-path logic
+- [x] Keep only Hessian-specific behavior in the script
 
 ### `file_utilities.py`
 
-- [ ] Choose one results filename convention
-- [ ] Deprecate or remove `generate_filename()` if `make_results_filename()` is the standard
-- [ ] Keep restore-stage and results-path helpers aligned with the chosen convention
+- [x] Choose one results filename convention
+- [x] Deprecate or remove `generate_filename()` if `make_results_filename()` is the standard
+- [x] Keep restore-stage and results-path helpers aligned with the chosen convention
 
 ## Phase 2: Config Contract
 
 ### New config helper module
 
-- [ ] Add `validate_cfg(cfg)` or equivalent
-- [ ] Add readable error messages for missing required keys
-- [ ] Validate the fields needed by:
-  - [ ] `train_utilities.py`
-  - [ ] `fields.py`
-  - [ ] `problems.py`
-  - [ ] the golden-path scripts
+- [x] Add `validate_cfg(cfg)` or equivalent
+- [x] Add readable error messages for missing required keys
+- [x] Validate the fields needed by:
+  - [x] `train_utilities.py`
+  - [x] `fields.py`
+  - [x] `problems.py`
+  - [x] the golden-path scripts
 
 ### `config/default_config.toml`
 
-- [ ] Keep this as the explicit base config users can inspect for defaults
-- [ ] Update to reflect actual required core keys
-- [ ] Remove or mark keys that are legacy or currently unused
-- [ ] Document the minimum viable config for the core workflow
+- [x] Keep this as the explicit base config users can inspect for defaults
+- [x] Update to reflect actual required core keys
+- [x] Remove or mark keys that are legacy or currently unused
+- [x] Document the minimum viable config for the core workflow
 
 ### `config/config_sinusoidal.toml`
 
-- [ ] Declare its base config explicitly with `extends = "default_config.toml"`
-- [ ] Bring naming into alignment with the validated config schema
-- [ ] Check that it still exercises a real supported path
+- [x] Declare its base config explicitly with `extends = "default_config.toml"`
+- [x] Bring naming into alignment with the validated config schema
+- [x] Check that it still exercises a real supported path
 
 ### `fields.py`
 
-- [ ] Resolve `penalty_B` vs `penalties_B`
-- [ ] Resolve `penalty_n` vs `penalties_n`
-- [ ] Make the expected config fields obvious in one place
+- [x] Resolve `penalty_B` vs `penalties_B`
+- [x] Resolve `penalty_n` vs `penalties_n`
+- [x] Make the expected config fields obvious in one place
 
 ### `train_utilities.py`
 
-- [ ] Make required config fields explicit in `initialize_objects()`
-- [ ] Avoid hidden assumptions about optional config entries
+- [x] Make required config fields explicit in `initialize_objects()`
+- [x] Avoid hidden assumptions about optional config entries
 
 ## Phase 3: Core Interfaces
 
 ### `problems.py`
 
-- [ ] Replace dynamic rebinding of `self.forward` with explicit methods or small subclasses
-- [ ] Replace dynamic rebinding of `self.data_nll` with explicit methods or small subclasses
-- [ ] Fix `make_mesh()` so it does not depend on hidden `cfg`
-- [ ] Reset observation lists at the start of `load_observations()`
-- [ ] Replace mutable default arguments
+- [x] Replace dynamic rebinding of `self.forward` with explicit methods or small subclasses
+- [x] Replace dynamic rebinding of `self.data_nll` with explicit methods or small subclasses
+- [x] Fix `make_mesh()` so it does not depend on hidden `cfg`
+- [x] Reset observation lists at the start of `load_observations()`
+- [x] Replace mutable default arguments
 - [ ] Review unused imports and dead code paths
 
 ### `objectives.py`
 
-- [ ] Simplify the control API
-- [ ] Replace implicit array/control conversions with explicit methods
-- [ ] Remove or fix `PosteriorObjective.update_controls()`
-- [ ] Decide whether `PosteriorObjectiveMesh` is still active
-- [ ] Remove dead or inactive objective code from the main path if not used
+- [x] Simplify the control API
+- [x] Replace implicit array/control conversions with explicit methods
+- [x] Remove or fix `PosteriorObjective.update_controls()`
+- [x] Decide whether `PosteriorObjectiveMesh` is still active
+- [x] Remove dead or inactive objective code from the main path if not used
 
 ### `models.py`
 
-- [ ] Replace mutable default arguments in `create_solver()`
+- [x] Replace mutable default arguments in `create_solver()`
 - [ ] Keep only solver variants that are still useful for active workflows
 - [ ] Confirm that normalization helpers still match the active inverse path
 
@@ -103,47 +103,47 @@ It is organized by file and roughly grouped by phase. The intent is to make impl
 
 ### `fields.py`
 
-- [ ] Fix or remove `precondition_matrix()`
-- [ ] Fix or remove the unresolved `threshold_spectral_matrix()` dependency
-- [ ] Decide whether `RheologyFieldMatrix` is still needed
-- [ ] Keep one primary joint-field implementation for active workflows
-- [ ] Remove stale branches that are not used by the golden path
+- [x] Fix or remove `precondition_matrix()`
+- [x] Fix or remove the unresolved `threshold_spectral_matrix()` dependency
+- [x] Decide whether `RheologyFieldMatrix` is still needed
+- [x] Keep one primary joint-field implementation for active workflows
+- [x] Remove stale branches that are not used by the golden path
 
 ### `train_utilities.py`
 
-- [ ] Move non-training workflow helpers into a more clearly named module if useful
-- [ ] Keep `generate_predictions()` as the one shared export path
-- [ ] Remove unused helpers if they are no longer part of active workflows
+- [x] Move non-training workflow helpers into a more clearly named module if useful
+- [x] Keep `generate_predictions()` as the one shared export path
+- [x] Remove unused helpers if they are no longer part of active workflows
 
 ### `scripts/compute_hessian.py`
 
-- [ ] Reuse `train_utilities.generate_predictions()` where possible
+- [x] Reuse `train_utilities.generate_predictions()` where possible
 - [ ] Remove the unused dense covariance inverse if it is not needed
-- [ ] Precompute sampling factors once instead of inside the loop
-- [ ] Keep the Hessian workflow readable:
-  - [ ] load MAP
-  - [ ] compute or read Hessian
-  - [ ] sample
-  - [ ] export
+- [x] Precompute sampling factors once instead of inside the loop
+- [x] Keep the Hessian workflow readable:
+  - [x] load MAP
+  - [x] compute or read Hessian
+  - [x] sample
+  - [x] export
 
 ## Phase 5: Advanced Posterior Code
 
 ### `vi.py`
 
-- [ ] Keep this as the primary Gaussian VI path
-- [ ] Keep only one fit/update pattern
-- [ ] Reduce duplicated MPI and sampling logic if shared with other VI modules
+- [x] Keep this as the primary Gaussian VI path
+- [x] Keep only one fit/update pattern
+- [x] Reduce duplicated MPI and sampling logic if shared with other VI modules
 
 ### `hvi.py`
 
-- [ ] Keep only the parts needed for hierarchical VI
-- [ ] Avoid duplicating generic Gaussian VI logic already present elsewhere
-- [ ] Reuse shared save/load helpers instead of duplicating them in scripts
+- [x] Keep only the parts needed for hierarchical VI
+- [x] Avoid duplicating generic Gaussian VI logic already present elsewhere
+- [x] Reuse shared save/load helpers instead of duplicating them in scripts
 
 ### Retired precision path
 
-- [ ] Remove `vi_precision.py`
-- [ ] Remove precision-only driver scripts
+- [x] Remove `vi_precision.py`
+- [x] Remove precision-only driver scripts
 
 ### `old_hvi.py`
 
@@ -196,6 +196,6 @@ It is organized by file and roughly grouped by phase. The intent is to make impl
 
 ## Final Pass
 
-- [ ] Update `README.md` after the refactor settles
+- [x] Update `README.md` after the refactor settles
 - [ ] Add a short `docs/ARCHITECTURE.md` later if the final structure warrants it
 - [ ] Check that the golden-path scripts are the easiest scripts in the repo to read

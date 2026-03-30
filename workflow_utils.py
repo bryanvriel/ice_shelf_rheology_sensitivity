@@ -3,8 +3,6 @@
 from dataclasses import dataclass
 from typing import Any
 
-import jbao
-
 import schurflow.config_utilities as cu
 import schurflow.file_utilities as fu
 import schurflow.train_utilities as tu
@@ -19,20 +17,6 @@ class WorkflowContext:
     problem: Any
     objective: Any
     converter: Any
-
-
-def load_config(args, extra_args):
-    cfg = cu.load_cfg_file(args.cfg)
-    return jbao.utils.update_cfg_with_extra(cfg, extra_args)
-
-
-def apply_calibration_overrides(cfg, args, calibration_file="calibration.toml"):
-    if not (getattr(args, "cal", False) or getattr(args, "disc", False)):
-        return cfg
-
-    cal = cu.load_cfg_file(calibration_file).todict()[cfg.output_dir]
-    key = "calibration_hyper_params" if args.cal else "discovery_hyper_params"
-    return cfg.update("inverse.hyper_params", cal[key])
 
 
 def resolve_output_file(cfg, args, *, data_file=None, prefix="r", ext="h5"):
@@ -62,7 +46,6 @@ def initialize_workflow(
     outfile_ext="h5",
     require_vi=False,
 ):
-    cfg = apply_calibration_overrides(cfg, args)
     cfg = cu.validate_cfg(cfg, require_vi=require_vi)
     data_file = fu.data_filename(cfg, args)
     outfile = resolve_output_file(
