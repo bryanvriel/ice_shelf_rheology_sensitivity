@@ -1,0 +1,40 @@
+extends = "default_prep_config.toml"
+
+output_dir = "outputs_margin_ref"
+velocity_scale = 0.9
+add_noise = false
+
+[data]
+u_sigma = 0.5
+v_sigma = 0.5
+
+[model]
+B_min = 0.1
+B_max = 2.5
+n_min = 1.0
+n_max = 5.0
+
+[rheology]
+exp_in = 2.25
+exp_out = 2.25
+
+mod_margin_rigidity = true
+mod_margin_exponent = false
+
+T_in = -25.0
+T_out = -20.0
+
+B_rifts = [0.3, 0.3]
+B0 = 1.0
+B_shift = 0.0
+B_amp = 0.25
+T_B = 20.0e3
+
+n_ref = 4.0
+n_amp = 0.0
+
+smb_in = -7.0
+smb_out = -1.0
+D_ref = -90.0
+
+side_friction = 0.04

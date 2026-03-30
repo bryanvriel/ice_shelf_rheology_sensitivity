@@ -1,0 +1,6 @@
+extends = "default_config.toml"
+
+output_dir = "outputs_margin_both"
+
+[matrix]
+use_ref = true

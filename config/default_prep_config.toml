@@ -1,0 +1,67 @@
+extends = "default_config.toml"
+
+# Shared base for preprocessing and simulation helpers.
+# Experiment-specific prep files should extend this.
+
+velocity_scale = 1.0
+mod_margins = false
+along_modulate = true
+
+add_noise = true
+filter_data = false
+
+plot = true
+
+n_spline_knots = 8
+reg_strengths = [0.01, 4.0]
+n_samples = 50000
+
+amp_max = 2.5
+amp_log_mean = -0.1
+amp_log_std = 0.15
+min_scale = 0.05
+max_scale = 2.1
+
+theta_std = 0.15
+
+seed_amp = 54
+seed_theta = 55
+
+add_trend = true
+trend_bounds = [-0.8, 0.8]
+
+[data]
+v_sigma = 4.0
+
+[matrix]
+supports_B = [5.5e3, 11.0e3, 22.0e3]
+min_strain_B = [0.0, 0.0, 0.0]
+
+supports_n = [5.5e3, 11.0e3, 22.0e3]
+min_strain_n = [0.0, 0.0, 0.0]
+
+base = 1.0
+
+[rheology]
+D_ref = 0.0
+side_friction = 0.02
+
+mod_margin_rigidity = false
+mod_margin_exponent = false
+
+n_ref = 3.0
+n_amp = 1.0
+T_n = 45.0e3
+n_shift = 0.0
+
+B0 = 0.625
+B_rifts = [0.7, 0.6]
+B_amp = 0.5
+T_B = 20.0e3
+B_shift = 0.0
+
+smb_in = -10.0
+smb_out = -1.0
+
+T_in = -25.0
+T_out = -20.0

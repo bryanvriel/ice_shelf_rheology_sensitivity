@@ -50,14 +50,14 @@ It is organized by file and roughly grouped by phase. The intent is to make impl
   - [ ] `problems.py`
   - [ ] the golden-path scripts
 
-### `default_config.toml`
+### `config/default_config.toml`
 
 - [ ] Keep this as the explicit base config users can inspect for defaults
 - [ ] Update to reflect actual required core keys
 - [ ] Remove or mark keys that are legacy or currently unused
 - [ ] Document the minimum viable config for the core workflow
 
-### `config_sinusoidal.toml`
+### `config/config_sinusoidal.toml`
 
 - [ ] Declare its base config explicitly with `extends = "default_config.toml"`
 - [ ] Bring naming into alignment with the validated config schema

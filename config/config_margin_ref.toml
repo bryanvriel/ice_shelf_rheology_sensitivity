@@ -1,0 +1,30 @@
+extends = "default_config.toml"
+
+output_dir = "outputs_margin_ref"
+
+[data]
+u_sigma = 0.5
+
+[inverse]
+lr_schedule = [
+    [0, 0.001],
+    [5000, 0.0005],
+    [10000, 0.0002],
+    [15000, 0.0001],
+]
+lr = 0.00025
+n_iter = 10000
+bfgs_factr = 50.0
+nll_scale = 1.0
+penalties_B = [0.01, 0.0]
+penalties_n = [0.01, 0.0]
+opt_type = "bfgs"
+opt_init_seed = 402
+opt_init_amp = 0.05
+joint = true
+
+[model]
+B_min = 0.1
+B_max = 2.5
+n_min = 1.0
+n_max = 5.0
