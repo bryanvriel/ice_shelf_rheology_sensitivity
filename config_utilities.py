@@ -86,17 +86,8 @@ def primary_penalty(penalty):
     return penalty
 
 
-def _normalize_loaded_cfg(data: dict) -> dict:
-    # Strict contract: all defaults and required structure live in TOML.
-    # Keep the hook so load_cfg_file() remains the one entry point.
-    return deepcopy(data)
-
-
-def load_cfg_file(path: str | Path, *, normalize: bool = True) -> DictToStruct:
-    data = _load_cfg_dict(Path(path), ())
-    if normalize:
-        data = _normalize_loaded_cfg(data)
-    return DictToStruct(data)
+def load_cfg_file(path: str | Path) -> DictToStruct:
+    return DictToStruct(_load_cfg_dict(Path(path), ()))
 
 
 def apply_calibration_overrides(
@@ -121,9 +112,8 @@ def load_config(
     cal: bool = False,
     disc: bool = False,
     calibration_file: str | Path = "calibration.toml",
-    normalize: bool = True,
 ) -> DictToStruct:
-    cfg = load_cfg_file(path, normalize=normalize)
+    cfg = load_cfg_file(path)
     if extra_args:
         cfg = update_cfg_with_extra(cfg, extra_args)
     return apply_calibration_overrides(
