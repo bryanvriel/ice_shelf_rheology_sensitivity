@@ -491,13 +491,15 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
     if θ_np is None:
         θ_np = field(z)
 
-    # Get loss function
-    loss = objective.loss(z)
+    if hasattr(objective, "evaluate_with_state"):
+        loss, controls, preds = objective.evaluate_with_state(z, x=θ_np)
+    else:
+        loss = objective.loss(z)
+        objective.set_control_array(θ_np)
+        controls = objective.copy_controls()
+        preds = problem.forward(controls)
 
-    objective.set_control_array(θ_np)
-    controls = objective.copy_controls()
     θ_B, θ_n, bc_controls = problem.split_controls(controls)
-    preds = problem.forward(controls)
 
     # Output coordinates
     Ny_out, Nx_out = converter.out_shape

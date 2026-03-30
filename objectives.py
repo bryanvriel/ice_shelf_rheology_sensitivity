@@ -161,6 +161,11 @@ class PosteriorObjective:
         prior_nll = self.field.prior_nll(z)
         return data_nll + self.scale * prior_nll
 
+    def evaluate_with_state(self, z, x=None):
+        data_nll, controls, state = self.data_objective.evaluate_with_state(z, x=x)
+        prior_nll = float(np.asarray(self.field.prior_nll(z)))
+        return data_nll + self.scale * prior_nll, controls, state
+
     def set_control_array(self, x: Vec) -> None:
         self.data_objective.set_control_array(x)
 
@@ -215,6 +220,14 @@ class DataObjective:
         """Return deep copies of the current Firedrake controls."""
         return _copy_controls(self._controls)
 
+    def copy_state(self) -> Controls:
+        """Return deep copies of the current forward state."""
+        checkpoints = []
+        for state_i in self.state:
+            checkpoint = getattr(getattr(state_i, "block_variable", None), "checkpoint", None)
+            checkpoints.append(checkpoint if checkpoint is not None else state_i)
+        return _copy_controls(checkpoints)
+
     def __call__(self, z: Vec, **kwargs) -> Tuple[float, Vec]:
         """Evaluate objective and gradient at latent parameters z.
 
@@ -246,6 +259,22 @@ class DataObjective:
         x = self.field(z)
         self.set_control_array(x)
         return self.scale * float(self.reduced_nll(self._controls))
+
+    def evaluate_with_state(
+        self,
+        z: Vec,
+        x: Vec | None = None,
+    ) -> Tuple[float, Controls, Controls]:
+        """Evaluate objective and return the current controls and forward state.
+
+        This is intended for prediction/export paths that need both the loss and
+        the forward solution without paying for a second solve.
+        """
+        if x is None:
+            x = self.field(z)
+        self.set_control_array(x)
+        loss = self.scale * float(self.reduced_nll(self._controls))
+        return loss, self.copy_controls(), self.copy_state()
 
     def gradient(self, z: Vec, **kwargs) -> Vec:
         """Evaluate gradient at latent parameters z."""
