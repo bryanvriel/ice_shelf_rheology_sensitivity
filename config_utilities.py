@@ -45,6 +45,7 @@ _NORMALIZED_DEFAULTS = {
         "use_ref": False,
         "mask": "none",
     },
+    "prep": {},
     "vi": {
         "hess_reg": 1.0,
     },
@@ -139,7 +140,7 @@ def primary_penalty(penalty):
 def normalize_cfg(cfg: DictToStruct | dict) -> DictToStruct:
     data = _to_dict(cfg)
 
-    for section in ("data", "inverse", "model", "matrix", "vi"):
+    for section in ("data", "inverse", "model", "matrix", "prep", "vi"):
         data.setdefault(section, {})
 
     # Accept older configs that stored the inverse mesh under [model].
@@ -147,6 +148,16 @@ def normalize_cfg(cfg: DictToStruct | dict) -> DictToStruct:
     model_meshfile = _get_path(data, "model.meshfile")
     if inverse_meshfile is _MISSING and model_meshfile is not _MISSING:
         _set_path(data, "inverse.meshfile", model_meshfile)
+
+    # Prep workflows often run on a different mesh than the inverse path.
+    # Prefer an explicit prep mesh when present, otherwise fall back to the
+    # legacy model mesh and finally the inverse mesh.
+    prep_meshfile = _get_path(data, "prep.meshfile")
+    if prep_meshfile is _MISSING:
+        if model_meshfile is not _MISSING:
+            _set_path(data, "prep.meshfile", model_meshfile)
+        elif inverse_meshfile is not _MISSING:
+            _set_path(data, "prep.meshfile", inverse_meshfile)
 
     # Canonicalize penalties onto the plural keys used in configs.
     for suffix in ("B", "n"):
