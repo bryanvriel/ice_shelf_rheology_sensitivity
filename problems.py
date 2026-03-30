@@ -128,6 +128,7 @@ class IceShelfProblem:
         self.boundary_node_indices = None
         self.boundary_coords = None
         self.boundary_s = None
+        self.boundary_length = None
 
         self._obs_init = False
         self._solver_init = False
@@ -277,15 +278,26 @@ class IceShelfProblem:
         self.boundary_node_indices = boundary_node_indices
         self.boundary_coords = edge_coords
         self.boundary_s = compute_path_length(edge_coords[:, 0], edge_coords[:, 1])
+        self.boundary_length = (
+            self.boundary_s[-1]
+            + np.sqrt(((edge_coords[0] - edge_coords[-1])**2).sum())
+        )
 
     def smooth_boundaries(self, alpha_mag=3.0e3, alpha_theta=4.0e3):
         self._init_boundary_geometry()
         boundary_node_indices = self.boundary_node_indices
         s_edge = self.boundary_s
+        boundary_length = self.boundary_length
 
         def _smooth(ref_array, alpha):
             bvals = ref_array
-            smooth_vals = helmholtz_1d_nonuniform(s_edge, bvals, alpha)
+            smooth_vals = helmholtz_1d_nonuniform(
+                s_edge,
+                bvals,
+                alpha,
+                bc="periodic",
+                period=boundary_length,
+            )
             return bvals, smooth_vals
 
         # Smooth the boundary-condition reference, leaving observations untouched.
@@ -526,11 +538,12 @@ def viscosity_to_rigidity(log_nu, log_eps_eff, n_exp):
     return firedrake.exp(log_B)
 
 
-def helmholtz_1d_nonuniform(s, y, alpha, bc="dirichlet"):
+def helmholtz_1d_nonuniform(s, y, alpha, bc="dirichlet", period=None):
     """
     Solve (I - alpha^2 d2/ds2) u = y on a 1D grid s (possibly nonuniform).
 
     bc:
+      - "periodic": u, u' periodic on a closed boundary with total length `period`
       - "neumann": u'(0)=u'(L)=0 (open boundary)
       - "dirichlet": u(0)=y(0), u(L)=y(L)
     """
@@ -544,6 +557,36 @@ def helmholtz_1d_nonuniform(s, y, alpha, bc="dirichlet"):
     ds = np.diff(s)
     if np.any(ds <= 0):
         raise ValueError("s must be strictly increasing.")
+
+    if bc == "periodic":
+        if period is None:
+            raise ValueError("`period` must be provided when bc='periodic'.")
+        period = float(period)
+        closing_gap = period - (s[-1] - s[0])
+        if closing_gap <= 0:
+            raise ValueError(
+                "`period` must exceed the open path length when bc='periodic'."
+            )
+
+        ds_next = np.empty(n, dtype=float)
+        ds_next[:-1] = ds
+        ds_next[-1] = closing_gap
+        ds_prev = np.roll(ds_next, 1)
+
+        A = np.zeros((n, n), dtype=float)
+        for i in range(n):
+            dsm = ds_prev[i]
+            dsp = ds_next[i]
+            denom = dsm + dsp
+            A_prev = 2.0 / (dsm * denom)
+            A_next = 2.0 / (dsp * denom)
+            A_self = -(A_prev + A_next)
+
+            A[i, i] = 1.0 - alpha**2 * A_self
+            A[i, (i - 1) % n] = -alpha**2 * A_prev
+            A[i, (i + 1) % n] = -alpha**2 * A_next
+
+        return np.linalg.solve(A, y)
 
     a = np.zeros(n)  # sub-diagonal (a[i] couples u[i-1])
     b = np.ones(n)   # main diagonal
