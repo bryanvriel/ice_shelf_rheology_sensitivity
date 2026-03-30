@@ -24,10 +24,11 @@ def main(cfg, args):
     ctx = wu.initialize_workflow(cfg, args)
     print("Data file:", ctx.data_file)
     print("Output file:", ctx.outfile)
-    metadata = tu.inference_metadata(ctx.field)
-    if int(metadata["infer_boundary_velocity"]):
-        metadata["boundary_s"] = np.asarray(ctx.problem.boundary_s)
-        metadata["boundary_node_indices"] = np.asarray(ctx.problem.boundary_node_indices)
+    metadata = tu.augment_boundary_metadata(
+        tu.inference_metadata(ctx.field),
+        ctx.field,
+        ctx.problem,
+    )
 
     # Restore from previous
     if args.restore:

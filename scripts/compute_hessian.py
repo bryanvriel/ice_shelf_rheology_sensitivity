@@ -85,10 +85,11 @@ def main(cfg, args):
         require_vi=True,
     )
     Nt = ctx.problem.Nt
-    metadata = tu.inference_metadata(ctx.field)
-    if int(metadata["infer_boundary_velocity"]):
-        metadata["boundary_s"] = np.asarray(ctx.problem.boundary_s)
-        metadata["boundary_node_indices"] = np.asarray(ctx.problem.boundary_node_indices)
+    metadata = tu.augment_boundary_metadata(
+        tu.inference_metadata(ctx.field),
+        ctx.field,
+        ctx.problem,
+    )
 
     mpi_print("Data file:", ctx.data_file)
     mpi_print("Output file:", ctx.outfile)
@@ -207,6 +208,7 @@ def main(cfg, args):
         save_boundary = int(metadata["infer_boundary_velocity"])
         if save_boundary:
             n_basis = int(metadata["boundary_n_basis"])
+            n_boundary = int(np.asarray(metadata["boundary_s"]).size)
             alpha_x_out = group.create_dataset(
                 "alpha_x_samples",
                 (n_samples, Nt, n_basis),
@@ -218,13 +220,8 @@ def main(cfg, args):
                 "d",
             )
             u_bc_out = group.create_dataset(
-                "u_bc_samples",
-                (n_samples, Nt, *ctx.converter.out_shape),
-                "f",
-            )
-            v_bc_out = group.create_dataset(
-                "v_bc_samples",
-                (n_samples, Nt, *ctx.converter.out_shape),
+                "u_bc_boundary_samples",
+                (n_samples, Nt, n_boundary, 2),
                 "f",
             )
 
@@ -252,9 +249,7 @@ def main(cfg, args):
                 for j in range(Nt):
                     alpha_x_out[k, j, :] = preds[f"alpha_x{j}"]
                     alpha_y_out[k, j, :] = preds[f"alpha_y{j}"]
-                    u_bc_j, v_bc_j = preds[f"u_bc{j}"]
-                    u_bc_out[k, j, ...] = u_bc_j
-                    v_bc_out[k, j, ...] = v_bc_j
+                    u_bc_out[k, j, ...] = preds[f"u_bc{j}"]
 
             if rank == 0 and i % 5 == 0:
                 print(f"Sample {i:3d} / {procN}")

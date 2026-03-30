@@ -159,6 +159,7 @@ def sample_boundary_realizations(problem, cfg, n_samples, seed, sample_scale):
         L=boundary_length,
         sigma_alpha=sigma_alpha,
         corr_length=corr_length,
+        design_matrix=A,
         return_positions=True,
     )
 
@@ -387,4 +388,3 @@ if __name__ == "__main__":
         disc=getattr(args, "disc", False),
     )
     main(cfg, args)
-

@@ -107,10 +107,11 @@ def main(cfg, args):
     mpi_print("MAP file:", mapfile)
     mpi_print("Checkpoint file:", ctx.outfile)
     tu.print_parameter_summary(ctx.field, printer=mpi_print)
-    metadata = tu.inference_metadata(ctx.field)
-    if int(metadata["infer_boundary_velocity"]):
-        metadata["boundary_s"] = np.asarray(ctx.problem.boundary_s)
-        metadata["boundary_node_indices"] = np.asarray(ctx.problem.boundary_node_indices)
+    metadata = tu.augment_boundary_metadata(
+        tu.inference_metadata(ctx.field),
+        ctx.field,
+        ctx.problem,
+    )
 
     def compute_log_likelihood(x):
         try:

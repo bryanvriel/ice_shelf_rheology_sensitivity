@@ -146,6 +146,20 @@ def inference_metadata(field):
     return metadata
 
 
+def augment_boundary_metadata(metadata, field, problem):
+    metadata = dict(metadata)
+    if hasattr(field, "epoch_alpha_slices"):
+        metadata.update(
+            {
+                "boundary_s": np.asarray(problem.boundary_s),
+                "boundary_node_indices": np.asarray(problem.boundary_node_indices),
+                "boundary_coords": np.asarray(problem.boundary_coords),
+                "boundary_basis_matrix": np.asarray(field.A),
+            }
+        )
+    return metadata
+
+
 def print_parameter_summary(field, printer=print):
     metadata = inference_metadata(field)
     printer("Number of parameters:", int(metadata["n_params_total"]))
@@ -505,17 +519,29 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
     for i, p in enumerate(preds):
         out_preds[f"u{i}"] = converter(p)
 
-    for i, bc in enumerate(bc_controls):
-        out_preds[f"u_bc{i}"] = converter(bc)
-
     if hasattr(field, "epoch_alpha_slices"):
+        boundary_nodes = np.asarray(problem.boundary_node_indices)
         out_preds["boundary_s"] = np.asarray(problem.boundary_s)
         out_preds["boundary_L"] = np.asarray(field.boundary_length)
+        out_preds["boundary_coords"] = np.asarray(problem.boundary_coords)
         out_preds["boundary_coeff_positions"] = np.asarray(field.coeff_positions)
+        out_preds["boundary_basis_matrix"] = np.asarray(field.A)
         for i in range(field.Nt):
             sx, sy = field.epoch_alpha_slices(i)
+            out_preds[f"u_bc{i}"] = np.asarray(
+                bc_controls[i].dat.data_ro[boundary_nodes, :].copy()
+            )
+            out_preds[f"u_bc_ref{i}"] = np.asarray(
+                problem.u_bc_ref[i].dat.data_ro[boundary_nodes, :].copy()
+            )
+            out_preds[f"u_obs_boundary{i}"] = np.asarray(
+                problem.u_obs[i].dat.data_ro[boundary_nodes, :].copy()
+            )
             out_preds[f"alpha_x{i}"] = np.asarray(z[sx])
             out_preds[f"alpha_y{i}"] = np.asarray(z[sy])
+    else:
+        for i, bc in enumerate(bc_controls):
+            out_preds[f"u_bc{i}"] = converter(bc)
 
     return out_preds
 

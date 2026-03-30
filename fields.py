@@ -89,6 +89,7 @@ def periodic_bspline_coefficient_prior_covariance_corrlen(
     L,
     sigma_alpha,
     corr_length,
+    design_matrix=None,
     jitter=1e-10,
     return_positions=False,
 ):
@@ -104,6 +105,16 @@ def periodic_bspline_coefficient_prior_covariance_corrlen(
 
     so that for small separations it matches the standard squared-exponential
     form exp(-0.5 * ds^2 / corr_length^2).
+
+    If ``design_matrix`` is provided, ``sigma_alpha`` is interpreted as the
+    target RMS standard deviation of the induced boundary-velocity deviations
+    ``delta_u = A @ alpha`` over the evaluation points. A single global scale
+    factor is applied so that
+
+        sqrt(mean(diag(A Sigma A^T))) ~= sigma_alpha.
+
+    If ``design_matrix`` is omitted, ``sigma_alpha`` falls back to the
+    coefficient standard deviation scale.
     """
     if n < 2:
         raise ValueError("n must be at least 2")
@@ -122,9 +133,29 @@ def periodic_bspline_coefficient_prior_covariance_corrlen(
 
     # Periodic squared-exponential kernel with physical arc-length scaling.
     periodic_distance = (L / np.pi) * np.sin(np.pi * ds / L)
-    Sigma = sigma_alpha**2 * np.exp(
+    Sigma0 = np.exp(
         -0.5 * (periodic_distance / corr_length)**2
     )
+
+    if design_matrix is not None:
+        A = np.asarray(design_matrix, dtype=float)
+        if A.ndim != 2 or A.shape[1] != n:
+            raise ValueError(
+                "design_matrix must have shape (n_points, n) matching the "
+                "number of spline coefficients."
+            )
+        induced_diag = np.einsum("ij,jk,ik->i", A, Sigma0, A)
+        induced_rms = float(np.sqrt(np.mean(induced_diag)))
+        if not np.isfinite(induced_rms) or induced_rms <= 0.0:
+            raise ValueError(
+                "Could not determine a positive induced RMS scale from the "
+                "design matrix and coefficient covariance."
+            )
+        scale = sigma_alpha / induced_rms
+    else:
+        scale = sigma_alpha
+
+    Sigma = scale**2 * Sigma0
 
     if jitter > 0.0:
         Sigma = Sigma + jitter * np.eye(n)
@@ -503,6 +534,7 @@ class JointBoundaryRheologyField(eqx.Module):
             L=boundary_L,
             sigma_alpha=sigma_alpha,
             corr_length=corr_length,
+            design_matrix=A_np,
             return_positions=True,
         )
         Q_alpha = np.linalg.inv(make_spd(Sigma_alpha))
