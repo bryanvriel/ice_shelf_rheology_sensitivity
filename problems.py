@@ -297,9 +297,9 @@ class IceShelfProblem:
         method = self._boundary_smoothing_method()
         self.boundary_smoothing_method = method
         use_bspline_reference = method == "spline"
+        corr_length = self._boundary_reference_corr_length()
         if use_bspline_reference:
             A = self._boundary_reference_design_matrix()
-            corr_length = self._boundary_reference_corr_length()
             penalty_matrix, penalty_order = self._boundary_reference_penalty_matrix()
             self.boundary_ref_corr_length = corr_length
         else:
