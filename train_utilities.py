@@ -188,6 +188,21 @@ def print_parameter_summary(field, printer=print):
             f"per-epoch params={2 * int(metadata['boundary_n_basis'])}",
         )
 
+
+def initialize_latent_vector(field, seed, amp):
+    rng = np.random.default_rng(seed)
+    z = amp * rng.standard_normal((field.N,))
+
+    if hasattr(field, "epoch_alpha_slices"):
+        z = np.asarray(z, dtype=float)
+        for k in range(field.Nt):
+            sx, sy = field.epoch_alpha_slices(k)
+            z[sx] = 0.0
+            z[sy] = 0.0
+
+    return z
+
+
 # ---------------------------------------------------------------------------
 # Inversion tools
 # ---------------------------------------------------------------------------

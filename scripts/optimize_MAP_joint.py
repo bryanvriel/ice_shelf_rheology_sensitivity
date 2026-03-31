@@ -42,8 +42,11 @@ def main(cfg, args):
         stage = restore_stage + 1
         file_mode = "a"
     else:
-        rng = np.random.default_rng(ctx.cfg.inverse.opt_init_seed)
-        z = ctx.cfg.inverse.opt_init_amp * rng.standard_normal((ctx.field.N,))
+        z = tu.initialize_latent_vector(
+            ctx.field,
+            seed=ctx.cfg.inverse.opt_init_seed,
+            amp=ctx.cfg.inverse.opt_init_amp,
+        )
         stage = 1
         file_mode = "w"
     tu.print_parameter_summary(ctx.field)
