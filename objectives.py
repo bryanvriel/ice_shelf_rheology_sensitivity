@@ -45,6 +45,25 @@ def _set_single_control(control, values: NDArray[np.float64]) -> None:
         control.assign(np.asarray(values).reshape(-1)[0])
 
 
+def _control_size(control) -> int:
+    if hasattr(control, "dat"):
+        return int(control.dat.data_ro.size)
+    return 1
+
+
+def _control_slices(controls: Controls) -> tuple[slice, ...]:
+    if isinstance(controls, (Function, Constant)):
+        return (slice(0, _control_size(controls)),)
+
+    offset = 0
+    control_slices = []
+    for ctrl in controls:
+        size = _control_size(ctrl)
+        control_slices.append(slice(offset, offset + size))
+        offset += size
+    return tuple(control_slices)
+
+
 def _control_to_array(control) -> Vec:
     if hasattr(control, "dat"):
         return control.dat.data_ro.ravel().copy()
@@ -57,17 +76,28 @@ def _controls_to_array(controls: Controls) -> Vec:
     return np.concatenate([_control_to_array(ctrl) for ctrl in controls])
 
 
-def _set_controls_from_array(controls: Controls, x: Vec) -> None:
+def _set_controls_from_array(
+    controls: Controls,
+    x: Vec,
+    control_slices: tuple[slice, ...] | None = None,
+) -> None:
     x = np.asarray(x)
     if isinstance(controls, (Function, Constant)):
         _set_single_control(controls, x)
         return
 
+    if control_slices is None:
+        control_slices = _control_slices(controls)
+
     offset = 0
-    for ctrl in controls:
-        size = _control_to_array(ctrl).size
-        _set_single_control(ctrl, x[offset : offset + size])
-        offset += size
+    for ctrl, ctrl_slice in zip(controls, control_slices):
+        _set_single_control(ctrl, x[ctrl_slice])
+        offset = ctrl_slice.stop
+
+    if offset != x.size:
+        raise ValueError(
+            f"Control array has size {x.size}, expected {offset}."
+        )
 
 
 def _gradient_to_array(grad: Controls) -> Vec:
@@ -189,6 +219,7 @@ class DataObjective:
 
         # Store original controls as template
         self._controls = _copy_controls(problem.controls)
+        self._control_slices = _control_slices(self._controls)
 
         # Build the reduced functional (recorded on init)
         self._build_reduced_functional()
@@ -210,7 +241,11 @@ class DataObjective:
 
     def set_control_array(self, x: Vec) -> None:
         """Assign a flattened array to the current Firedrake controls."""
-        _set_controls_from_array(self._controls, x)
+        _set_controls_from_array(
+            self._controls,
+            x,
+            control_slices=self._control_slices,
+        )
 
     def get_control_array(self) -> Vec:
         """Return the current Firedrake controls as a flat array."""
@@ -297,13 +332,10 @@ class DataObjective:
             directions = h
         else:
             directions = []
-            offset = 0
-            for ctrl in self._controls:
+            for ctrl, ctrl_slice in zip(self._controls, self._control_slices):
                 h_i = _copy_control(ctrl)
-                size = _control_to_array(ctrl).size
-                _set_single_control(h_i, dx[offset : offset + size])
+                _set_single_control(h_i, dx[ctrl_slice])
                 directions.append(h_i)
-                offset += size
 
         # Evaluate at current controls (needed to set tape state)
         _ = self.reduced_nll(self._controls)
