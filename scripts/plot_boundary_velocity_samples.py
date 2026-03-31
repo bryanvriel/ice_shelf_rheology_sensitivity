@@ -22,8 +22,9 @@ from schurflow.problems import IceShelfProblem, make_mesh
 def parse():
     parser = argparse.ArgumentParser(
         description=(
-            "Visualize observed boundary velocities, the smoothed boundary "
-            "reference, and random periodic spline realizations for one epoch."
+            "Visualize observed boundary velocities, the fitted boundary "
+            "reference, and random periodic spline deviations about that "
+            "reference for one epoch."
         ),
         parents=[fu.common_parse()],
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -71,14 +72,28 @@ def parse():
         help="Figure resolution when saving to disk.",
     )
     parser.add_argument(
+        "--fit-boundary-reference",
+        action="store_true",
+        dest="fit_boundary_reference",
+        help="Force the boundary reference fit on for this plot.",
+    )
+    parser.add_argument(
+        "--no-fit-boundary-reference",
+        action="store_true",
+        dest="no_fit_boundary_reference",
+        help="Force the boundary reference fit off for this plot.",
+    )
+    parser.add_argument(
         "--smooth-boundary",
         action="store_true",
-        help="Force boundary smoothing on for this plot.",
+        dest="fit_boundary_reference",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--no-smooth-boundary",
         action="store_true",
-        help="Force boundary smoothing off for this plot.",
+        dest="no_fit_boundary_reference",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--show",
@@ -93,15 +108,16 @@ def load_num_epochs(data_file):
         return int(fid["u"].shape[0])
 
 
-def resolve_smoothing(cfg, args):
-    if args.smooth_boundary and args.no_smooth_boundary:
+def resolve_reference_fit(cfg, args):
+    if args.fit_boundary_reference and args.no_fit_boundary_reference:
         raise ValueError(
-            "Cannot pass both --smooth-boundary and --no-smooth-boundary."
+            "Cannot pass both --fit-boundary-reference and "
+            "--no-fit-boundary-reference."
         )
 
-    if args.smooth_boundary:
+    if args.fit_boundary_reference:
         return True
-    if args.no_smooth_boundary:
+    if args.no_fit_boundary_reference:
         return False
     return bool(cfg.inverse.smooth_boundary)
 
@@ -130,7 +146,7 @@ def initialize_problem(cfg, data_file, args):
         problem = IceShelfProblem(cfg, mesh, fixed_exponent=True, **kwargs)
         problem.load_observations(data_file, time_ind=[args.epoch])
 
-    if resolve_smoothing(cfg, args):
+    if resolve_reference_fit(cfg, args):
         problem.smooth_boundaries()
     else:
         problem._init_boundary_geometry()
@@ -187,6 +203,7 @@ def sample_boundary_realizations(problem, cfg, n_samples, seed, sample_scale):
         "n_basis": n_basis,
         "basis_spacing": basis_spacing,
         "basis_spacing_target": basis_spacing_target,
+        "reference_corr_length": getattr(problem, "boundary_ref_corr_length", None),
         "coeff_positions": coeff_positions,
         "u_obs": u_obs,
         "u_ref": u_ref,
@@ -211,7 +228,7 @@ def draw_profile_panel(ax, s, obs, ref, samples, label, ref_label):
             color="C0",
             alpha=0.22,
             linewidth=1.0,
-            label="Random realizations" if i == 0 else None,
+            label="Random BC realizations" if i == 0 else None,
         )
 
     ax.plot(s, obs, color="0.65", linewidth=1.6, label="Observed boundary")
@@ -276,7 +293,7 @@ def draw_quiver_panel(ax, coords, u_obs, u_ref, samples, quiver_samples):
             scale_units="xy",
             scale=1.0,
             width=0.0020,
-            label="Sample realizations" if i == 0 else None,
+            label="Sample BC realizations" if i == 0 else None,
         )
 
     ax.set_title("Plan View")
@@ -342,7 +359,14 @@ def make_figure(plot_data, args, ref_label, epoch_label):
 
     fig.suptitle(
         (
-            f"Boundary velocity reference and spline realizations "
+            f"Boundary reference fit and spline deviations "
+            f"(epoch {epoch_label}, n_samples={args.n_samples}, "
+            f"sample_scale={args.sample_scale:g}, "
+            f"n_basis={int(plot_data['n_basis'])}, "
+            f"ref_corr_length={plot_data['reference_corr_length']:g})"
+            if plot_data["reference_corr_length"] is not None
+            else
+            f"Boundary reference and spline deviations "
             f"(epoch {epoch_label}, n_samples={args.n_samples}, "
             f"sample_scale={args.sample_scale:g}, "
             f"n_basis={int(plot_data['n_basis'])})"
@@ -371,10 +395,18 @@ def main(cfg, args):
         f"n_basis={int(plot_data['n_basis'])},",
         f"spacing={float(plot_data['basis_spacing']):.1f}",
     )
+    if plot_data["reference_corr_length"] is not None:
+        print(
+            "Boundary reference:",
+            "periodic B-spline fit,",
+            f"ref_corr_length={float(plot_data['reference_corr_length']):.1f}",
+        )
+    else:
+        print("Boundary reference: raw observed boundary values")
 
     ref_label = (
-        "Smoothed BC reference"
-        if resolve_smoothing(cfg, args)
+        "Fitted BC reference"
+        if resolve_reference_fit(cfg, args)
         else "BC reference"
     )
     fig = make_figure(plot_data, args, ref_label, epoch_label=args.epoch)

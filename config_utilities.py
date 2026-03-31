@@ -245,6 +245,7 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
         degree = _get_path(data, "inverse.boundary_spline_degree", None)
         sigma_alpha = _get_path(data, "inverse.boundary_sigma_alpha", None)
         corr_length = _get_path(data, "inverse.boundary_corr_length", None)
+        ref_corr_length = _get_path(data, "inverse.boundary_ref_corr_length", _MISSING)
 
         if n_basis is _MISSING and basis_spacing is _MISSING:
             errors.append(
@@ -283,6 +284,10 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
             errors.append("`inverse.boundary_sigma_alpha` must be positive.")
         if not isinstance(corr_length, Number) or corr_length <= 0:
             errors.append("`inverse.boundary_corr_length` must be positive.")
+        if ref_corr_length is not _MISSING and (
+            not isinstance(ref_corr_length, Number) or ref_corr_length <= 0
+        ):
+            errors.append("`inverse.boundary_ref_corr_length` must be positive.")
 
     lr_schedule = _get_path(data, "inverse.lr_schedule", [])
     if not _is_sequence(lr_schedule):

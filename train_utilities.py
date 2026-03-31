@@ -162,6 +162,10 @@ def augment_boundary_metadata(metadata, field, problem):
                 "boundary_basis_matrix": np.asarray(field.A),
             }
         )
+        if getattr(problem, "boundary_ref_corr_length", None) is not None:
+            metadata["boundary_ref_corr_length"] = np.float64(
+                problem.boundary_ref_corr_length
+            )
     return metadata
 
 

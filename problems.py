@@ -14,6 +14,12 @@ import rasterio
 from cryogen import interpolate
 
 from . import models
+from .fields import (
+    make_spd,
+    periodic_bspline_coefficient_prior_covariance_corrlen,
+    periodic_bspline_design_matrix,
+    resolve_boundary_basis_config,
+)
 from .utilities import coordinate_values
 
 
@@ -102,6 +108,7 @@ class IceShelfProblem:
 
         # Initialize function spaces for observations (potentially time-dependent)
         # These need to be loaded prior to any forward solves
+        self.cfg = cfg
         self.h = firedrake.Function(self.Q)
         self.u_obs = []
         self.u_bc_ref = []
@@ -129,6 +136,7 @@ class IceShelfProblem:
         self.boundary_coords = None
         self.boundary_s = None
         self.boundary_length = None
+        self.boundary_ref_corr_length = None
 
         self._obs_init = False
         self._solver_init = False
@@ -286,19 +294,10 @@ class IceShelfProblem:
     def smooth_boundaries(self, alpha_mag=3.0e3, alpha_theta=4.0e3):
         self._init_boundary_geometry()
         boundary_node_indices = self.boundary_node_indices
-        s_edge = self.boundary_s
-        boundary_length = self.boundary_length
-
-        def _smooth(ref_array, alpha):
-            bvals = ref_array
-            smooth_vals = helmholtz_1d_nonuniform(
-                s_edge,
-                bvals,
-                alpha,
-                bc="periodic",
-                period=boundary_length,
-            )
-            return bvals, smooth_vals
+        use_bspline_reference = self._can_use_bspline_boundary_reference()
+        if use_bspline_reference:
+            A = self._boundary_reference_design_matrix()
+            corr_length = self._boundary_reference_corr_length()
 
         # Smooth the boundary-condition reference, leaving observations untouched.
         for k in range(self.Nt):
@@ -306,15 +305,110 @@ class IceShelfProblem:
             self.u_bc[k].assign(self.u_obs[k])
 
             u = self.u_obs[k].dat.data_ro[boundary_node_indices, :]
-            mag = np.linalg.norm(u, axis=1)
-            theta = np.degrees(np.arctan2(u[:, 1], u[:, 0]))
-            mag, mag_smooth = _smooth(mag, alpha_mag)
-            theta, theta_smooth = _smooth(theta, alpha_theta)
-            u = mag_smooth * np.cos(np.radians(theta_smooth))
-            v = mag_smooth * np.sin(np.radians(theta_smooth))
-            u_smooth = np.column_stack((u, v))
+            if use_bspline_reference:
+                sigma = self.σ_u[k].dat.data_ro[boundary_node_indices, :]
+                u_smooth = np.column_stack(
+                    [
+                        self._fit_boundary_reference_component(
+                            A,
+                            u[:, comp],
+                            sigma[:, comp],
+                            corr_length,
+                        )
+                        for comp in range(u.shape[1])
+                    ]
+                )
+            else:
+                u_smooth = self._smooth_boundary_legacy(
+                    u,
+                    alpha_mag=alpha_mag,
+                    alpha_theta=alpha_theta,
+                )
             self.u_bc_ref[k].dat.data[boundary_node_indices] = u_smooth
             self.u_bc[k].dat.data[boundary_node_indices] = u_smooth
+
+    def _boundary_reference_corr_length(self):
+        corr_length = getattr(self.cfg.inverse, "boundary_ref_corr_length", None)
+        if corr_length is None:
+            corr_length = getattr(self.cfg.inverse, "boundary_corr_length", None)
+        if corr_length is None:
+            raise ValueError(
+                "Boundary reference fitting requires `inverse.boundary_ref_corr_length` "
+                "or `inverse.boundary_corr_length`."
+            )
+        return float(corr_length)
+
+    def _boundary_reference_design_matrix(self):
+        n_basis, _, _ = resolve_boundary_basis_config(self.cfg, self.boundary_length)
+        degree = int(self.cfg.inverse.boundary_spline_degree)
+        return periodic_bspline_design_matrix(
+            self.boundary_s,
+            self.boundary_length,
+            n_basis=n_basis,
+            degree=degree,
+        )
+
+    def _can_use_bspline_boundary_reference(self):
+        try:
+            self.boundary_ref_corr_length = self._boundary_reference_corr_length()
+            self._boundary_reference_design_matrix()
+            return True
+        except (AttributeError, ValueError):
+            self.boundary_ref_corr_length = None
+            return False
+
+    def _fit_boundary_reference_component(self, A, y, sigma, corr_length):
+        y = np.asarray(y, dtype=float)
+        sigma = np.asarray(sigma, dtype=float)
+        sigma = np.where(
+            np.isfinite(sigma) & (sigma > 0.0),
+            sigma,
+            float(self.σ_u_default),
+        )
+
+        weights = 1.0 / sigma**2
+        weight_sum = float(weights.sum())
+        if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+            return y.copy()
+
+        mean_y = float(np.dot(weights, y) / weight_sum)
+        y_centered = y - mean_y
+        target_rms = float(np.sqrt(np.dot(weights, y_centered**2) / weight_sum))
+        if not np.isfinite(target_rms) or target_rms <= 1e-12:
+            return np.full_like(y, mean_y)
+
+        Sigma_ref = periodic_bspline_coefficient_prior_covariance_corrlen(
+            n=A.shape[1],
+            L=self.boundary_length,
+            sigma_alpha=target_rms,
+            corr_length=corr_length,
+            design_matrix=A,
+        )
+        Q_ref = np.linalg.inv(make_spd(Sigma_ref))
+
+        A_weighted = A * np.sqrt(weights[:, None])
+        lhs = A_weighted.T @ A_weighted + Q_ref
+        rhs = A.T @ (weights * y_centered)
+        beta = np.linalg.solve(make_spd(lhs), rhs)
+        return mean_y + A @ beta
+
+    def _smooth_boundary_legacy(self, u, alpha_mag, alpha_theta):
+        def _smooth(ref_array, alpha):
+            return helmholtz_1d_nonuniform(
+                self.boundary_s,
+                ref_array,
+                alpha,
+                bc="periodic",
+                period=self.boundary_length,
+            )
+
+        mag = np.linalg.norm(u, axis=1)
+        theta = np.degrees(np.arctan2(u[:, 1], u[:, 0]))
+        mag_smooth = _smooth(mag, alpha_mag)
+        theta_smooth = _smooth(theta, alpha_theta)
+        u_smooth = mag_smooth * np.cos(np.radians(theta_smooth))
+        v_smooth = mag_smooth * np.sin(np.radians(theta_smooth))
+        return np.column_stack((u_smooth, v_smooth))
 
     def load_rheology(self, dirname, n_exp=None):
         print('Loading true rheology')
