@@ -72,27 +72,21 @@ def parse():
         help="Figure resolution when saving to disk.",
     )
     parser.add_argument(
-        "--fit-boundary-reference",
-        action="store_true",
-        dest="fit_boundary_reference",
-        help="Force the boundary reference fit on for this plot.",
-    )
-    parser.add_argument(
-        "--no-fit-boundary-reference",
-        action="store_true",
-        dest="no_fit_boundary_reference",
-        help="Force the boundary reference fit off for this plot.",
+        "--boundary-smoothing-method",
+        choices=("spline", "helmholtz"),
+        default=None,
+        help="Override the boundary smoothing method used for the reference BC.",
     )
     parser.add_argument(
         "--smooth-boundary",
         action="store_true",
-        dest="fit_boundary_reference",
+        dest="legacy_spline_reference",
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--no-smooth-boundary",
         action="store_true",
-        dest="no_fit_boundary_reference",
+        dest="legacy_helmholtz_reference",
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
@@ -108,18 +102,19 @@ def load_num_epochs(data_file):
         return int(fid["u"].shape[0])
 
 
-def resolve_reference_fit(cfg, args):
-    if args.fit_boundary_reference and args.no_fit_boundary_reference:
+def resolve_boundary_smoothing_method(cfg, args):
+    if args.legacy_spline_reference and args.legacy_helmholtz_reference:
         raise ValueError(
-            "Cannot pass both --fit-boundary-reference and "
-            "--no-fit-boundary-reference."
+            "Cannot pass both legacy boundary smoothing aliases at once."
         )
 
-    if args.fit_boundary_reference:
-        return True
-    if args.no_fit_boundary_reference:
-        return False
-    return bool(cfg.inverse.smooth_boundary)
+    if args.boundary_smoothing_method is not None:
+        return args.boundary_smoothing_method
+    if args.legacy_spline_reference:
+        return "spline"
+    if args.legacy_helmholtz_reference:
+        return "helmholtz"
+    return str(cfg.inverse.boundary_smoothing_method)
 
 
 def initialize_problem(cfg, data_file, args):
@@ -146,10 +141,8 @@ def initialize_problem(cfg, data_file, args):
         problem = IceShelfProblem(cfg, mesh, fixed_exponent=True, **kwargs)
         problem.load_observations(data_file, time_ind=[args.epoch])
 
-    if resolve_reference_fit(cfg, args):
-        problem.smooth_boundaries()
-    else:
-        problem._init_boundary_geometry()
+    cfg.inverse.boundary_smoothing_method = resolve_boundary_smoothing_method(cfg, args)
+    problem.smooth_boundaries()
 
     return problem
 
@@ -204,6 +197,7 @@ def sample_boundary_realizations(problem, cfg, n_samples, seed, sample_scale):
         "basis_spacing": basis_spacing,
         "basis_spacing_target": basis_spacing_target,
         "reference_corr_length": getattr(problem, "boundary_ref_corr_length", None),
+        "reference_method": getattr(problem, "boundary_smoothing_method", None),
         "coeff_positions": coeff_positions,
         "u_obs": u_obs,
         "u_ref": u_ref,
@@ -359,17 +353,19 @@ def make_figure(plot_data, args, ref_label, epoch_label):
 
     fig.suptitle(
         (
-            f"Boundary reference fit and spline deviations "
+            f"Boundary reference smoothing and spline deviations "
             f"(epoch {epoch_label}, n_samples={args.n_samples}, "
             f"sample_scale={args.sample_scale:g}, "
             f"n_basis={int(plot_data['n_basis'])}, "
+            f"method={plot_data['reference_method']}, "
             f"ref_smoothing_length={plot_data['reference_corr_length']:g})"
             if plot_data["reference_corr_length"] is not None
             else
-            f"Boundary reference and spline deviations "
+            f"Boundary reference smoothing and spline deviations "
             f"(epoch {epoch_label}, n_samples={args.n_samples}, "
             f"sample_scale={args.sample_scale:g}, "
-            f"n_basis={int(plot_data['n_basis'])})"
+            f"n_basis={int(plot_data['n_basis'])}, "
+            f"method={plot_data['reference_method']})"
         ),
         fontsize=13,
     )
@@ -395,20 +391,18 @@ def main(cfg, args):
         f"n_basis={int(plot_data['n_basis'])},",
         f"spacing={float(plot_data['basis_spacing']):.1f}",
     )
-    if plot_data["reference_corr_length"] is not None:
+    if plot_data["reference_method"] == "spline" and plot_data["reference_corr_length"] is not None:
         print(
             "Boundary reference:",
-            "periodic B-spline fit,",
+            "periodic B-spline smoother,",
             f"smoothing_length={float(plot_data['reference_corr_length']):.1f}",
         )
+    elif plot_data["reference_method"] == "helmholtz":
+        print("Boundary reference: periodic Helmholtz smoother")
     else:
-        print("Boundary reference: raw observed boundary values")
+        print("Boundary reference:", plot_data["reference_method"])
 
-    ref_label = (
-        "Fitted BC reference"
-        if resolve_reference_fit(cfg, args)
-        else "BC reference"
-    )
+    ref_label = "Smoothed BC reference"
     fig = make_figure(plot_data, args, ref_label, epoch_label=args.epoch)
 
     if args.output:

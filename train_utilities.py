@@ -78,9 +78,8 @@ def initialize_objects(
         problem.load_observations(data_file, time_ind=time_ind)
         problem.load_rheology(outdir, n_exp=cfg.inverse.fixed_n)
 
-    # Optional boundary smoothing
-    if cfg.inverse.smooth_boundary:
-        problem.smooth_boundaries()
+    # Boundary reference smoothing is always applied; the config chooses the method.
+    problem.smooth_boundaries()
     problem.init_solvers()
 
     # Create latent-to-control field after the problem is initialized
@@ -160,6 +159,9 @@ def augment_boundary_metadata(metadata, field, problem):
                 "boundary_node_indices": np.asarray(problem.boundary_node_indices),
                 "boundary_coords": np.asarray(problem.boundary_coords),
                 "boundary_basis_matrix": np.asarray(field.A),
+                "boundary_smoothing_method": np.bytes_(
+                    getattr(problem, "boundary_smoothing_method", "spline")
+                ),
             }
         )
         if getattr(problem, "boundary_ref_corr_length", None) is not None:

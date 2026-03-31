@@ -136,6 +136,7 @@ class IceShelfProblem:
         self.boundary_s = None
         self.boundary_length = None
         self.boundary_ref_corr_length = None
+        self.boundary_smoothing_method = None
 
         self._obs_init = False
         self._solver_init = False
@@ -293,11 +294,16 @@ class IceShelfProblem:
     def smooth_boundaries(self, alpha_mag=3.0e3, alpha_theta=4.0e3):
         self._init_boundary_geometry()
         boundary_node_indices = self.boundary_node_indices
-        use_bspline_reference = self._can_use_bspline_boundary_reference()
+        method = self._boundary_smoothing_method()
+        self.boundary_smoothing_method = method
+        use_bspline_reference = method == "spline"
         if use_bspline_reference:
             A = self._boundary_reference_design_matrix()
             corr_length = self._boundary_reference_corr_length()
             penalty_matrix, penalty_order = self._boundary_reference_penalty_matrix()
+            self.boundary_ref_corr_length = corr_length
+        else:
+            self.boundary_ref_corr_length = None
 
         # Smooth the boundary-condition reference, leaving observations untouched.
         for k in range(self.Nt):
@@ -328,6 +334,28 @@ class IceShelfProblem:
                 )
             self.u_bc_ref[k].dat.data[boundary_node_indices] = u_smooth
             self.u_bc[k].dat.data[boundary_node_indices] = u_smooth
+
+    def _boundary_smoothing_method(self):
+        method = getattr(self.cfg.inverse, "boundary_smoothing_method", None)
+        if method is None:
+            legacy_smooth_boundary = getattr(self.cfg.inverse, "smooth_boundary", None)
+            if legacy_smooth_boundary is True:
+                return "spline"
+            if legacy_smooth_boundary is False:
+                raise ValueError(
+                    "Boundary smoothing is always enabled. Set "
+                    "`inverse.boundary_smoothing_method` to `spline` or `helmholtz`."
+                )
+            raise ValueError(
+                "Missing `inverse.boundary_smoothing_method`. Choose `spline` "
+                "or `helmholtz`."
+            )
+        method = str(method).lower()
+        if method not in {"spline", "helmholtz"}:
+            raise ValueError(
+                "`inverse.boundary_smoothing_method` must be `spline` or `helmholtz`."
+            )
+        return method
 
     def _boundary_reference_corr_length(self):
         corr_length = getattr(self.cfg.inverse, "boundary_ref_corr_length", None)
@@ -362,16 +390,6 @@ class IceShelfProblem:
             derivative=penalty_order,
         )
         return A_penalty.T @ A_penalty, penalty_order
-
-    def _can_use_bspline_boundary_reference(self):
-        try:
-            self.boundary_ref_corr_length = self._boundary_reference_corr_length()
-            self._boundary_reference_design_matrix()
-            self._boundary_reference_penalty_matrix()
-            return True
-        except (AttributeError, ValueError):
-            self.boundary_ref_corr_length = None
-            return False
 
     def _boundary_reference_regularization_strength(
         self,

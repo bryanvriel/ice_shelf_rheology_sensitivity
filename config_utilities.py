@@ -23,6 +23,7 @@ _MISSING = object()
 _SUPPORTED_NORM_TYPES = {"log", "tanh", "arctan", "cdf", "sp"}
 _SUPPORTED_B_NORM_TYPES = _SUPPORTED_NORM_TYPES | {"viscosity"}
 _SUPPORTED_HYPERPARAM_LENGTHS = {0, 2, 3}
+_SUPPORTED_BOUNDARY_SMOOTHING_METHODS = {"spline", "helmholtz"}
 
 
 def _merge_dicts(base: dict, override: dict) -> dict:
@@ -148,7 +149,6 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
         "inverse.n_norm_type",
         "inverse.dirichlet_ids",
         "inverse.lr_schedule",
-        "inverse.smooth_boundary",
         "inverse.opt_type",
         "inverse.n_iter",
         "inverse.opt_init_seed",
@@ -176,9 +176,6 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
 
     if _get_path(data, "inverse.joint", True) is False:
         require("inverse.fixed_n")
-
-    if errors:
-        raise ConfigValidationError("\n".join(errors))
 
     for path in ("inverse.penalties_B", "inverse.penalties_n"):
         penalty = _get_path(data, path)
@@ -227,30 +224,48 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
     if not _is_sequence(dirichlet_ids) or len(dirichlet_ids) == 0:
         errors.append("`inverse.dirichlet_ids` must be a non-empty list.")
 
-    infer_boundary_velocity = _get_path(data, "inverse.infer_boundary_velocity", False)
-    if infer_boundary_velocity:
-        for path in (
-            "inverse.boundary_spline_degree",
-            "inverse.boundary_sigma_alpha",
-            "inverse.boundary_corr_length",
-        ):
-            if _get_path(data, path, _MISSING) is _MISSING:
-                errors.append(
-                    f"Missing required config key `{path}` when "
-                    "`inverse.infer_boundary_velocity = true`."
-                )
+    inverse_cfg = data.setdefault("inverse", {})
+    smoothing_method = _get_path(data, "inverse.boundary_smoothing_method", _MISSING)
+    legacy_smooth_boundary = _get_path(data, "inverse.smooth_boundary", _MISSING)
 
+    if smoothing_method is _MISSING:
+        if legacy_smooth_boundary is True:
+            inverse_cfg["boundary_smoothing_method"] = "spline"
+            smoothing_method = "spline"
+        elif legacy_smooth_boundary is False:
+            errors.append(
+                "`inverse.smooth_boundary = false` is no longer supported. "
+                "Boundary smoothing is always enabled; set "
+                "`inverse.boundary_smoothing_method` to `spline` or `helmholtz`."
+            )
+        else:
+            errors.append("Missing required config key `inverse.boundary_smoothing_method`.")
+
+    if legacy_smooth_boundary not in (_MISSING, True, False):
+        errors.append("`inverse.smooth_boundary` must be a boolean if provided.")
+
+    if smoothing_method is not _MISSING and (
+        not isinstance(smoothing_method, str)
+        or smoothing_method not in _SUPPORTED_BOUNDARY_SMOOTHING_METHODS
+    ):
+        errors.append(
+            "`inverse.boundary_smoothing_method` must be one of "
+            "`spline` or `helmholtz`."
+        )
+
+    infer_boundary_velocity = _get_path(data, "inverse.infer_boundary_velocity", False)
+    requires_boundary_spline = (
+        infer_boundary_velocity or smoothing_method == "spline"
+    )
+    if requires_boundary_spline:
         n_basis = _get_path(data, "inverse.boundary_n_basis", _MISSING)
         basis_spacing = _get_path(data, "inverse.boundary_basis_spacing", _MISSING)
         degree = _get_path(data, "inverse.boundary_spline_degree", None)
-        sigma_alpha = _get_path(data, "inverse.boundary_sigma_alpha", None)
-        corr_length = _get_path(data, "inverse.boundary_corr_length", None)
-        ref_corr_length = _get_path(data, "inverse.boundary_ref_corr_length", _MISSING)
 
         if n_basis is _MISSING and basis_spacing is _MISSING:
             errors.append(
-                "Boundary inference requires either `inverse.boundary_basis_spacing` "
-                "or `inverse.boundary_n_basis`."
+                "Boundary spline configuration requires either "
+                "`inverse.boundary_basis_spacing` or `inverse.boundary_n_basis`."
             )
         if n_basis is not _MISSING and basis_spacing is not _MISSING:
             errors.append(
@@ -280,14 +295,38 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
                 "`inverse.boundary_n_basis` must be at least "
                 "`inverse.boundary_spline_degree + 1`."
             )
+
+    if infer_boundary_velocity:
+        for path in (
+            "inverse.boundary_spline_degree",
+            "inverse.boundary_sigma_alpha",
+            "inverse.boundary_corr_length",
+        ):
+            if _get_path(data, path, _MISSING) is _MISSING:
+                errors.append(
+                    f"Missing required config key `{path}` when "
+                    "`inverse.infer_boundary_velocity = true`."
+                )
+
+        sigma_alpha = _get_path(data, "inverse.boundary_sigma_alpha", None)
+        corr_length = _get_path(data, "inverse.boundary_corr_length", None)
         if not isinstance(sigma_alpha, Number) or sigma_alpha <= 0:
             errors.append("`inverse.boundary_sigma_alpha` must be positive.")
         if not isinstance(corr_length, Number) or corr_length <= 0:
             errors.append("`inverse.boundary_corr_length` must be positive.")
-        if ref_corr_length is not _MISSING and (
-            not isinstance(ref_corr_length, Number) or ref_corr_length <= 0
-        ):
-            errors.append("`inverse.boundary_ref_corr_length` must be positive.")
+
+    ref_corr_length = _get_path(data, "inverse.boundary_ref_corr_length", _MISSING)
+    if smoothing_method == "spline":
+        fallback_corr_length = _get_path(data, "inverse.boundary_corr_length", _MISSING)
+        if ref_corr_length is _MISSING and fallback_corr_length is _MISSING:
+            errors.append(
+                "Spline boundary smoothing requires `inverse.boundary_ref_corr_length` "
+                "or `inverse.boundary_corr_length`."
+            )
+    if ref_corr_length is not _MISSING and (
+        not isinstance(ref_corr_length, Number) or ref_corr_length <= 0
+    ):
+        errors.append("`inverse.boundary_ref_corr_length` must be positive.")
 
     lr_schedule = _get_path(data, "inverse.lr_schedule", [])
     if not _is_sequence(lr_schedule):
