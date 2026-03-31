@@ -64,7 +64,7 @@ penalties_n = 0.1111
 meshfile = "aux/simplified_inverse_1km.msh"
 dirichlet_ids = [1,]
 
-# Boundary reference fit parameters
+# Boundary reference fit parameters (larger reference length means smoother BC fit)
 smooth_boundary = true
 boundary_ref_corr_length = 15000.0
 

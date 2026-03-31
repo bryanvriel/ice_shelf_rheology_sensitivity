@@ -363,7 +363,7 @@ def make_figure(plot_data, args, ref_label, epoch_label):
             f"(epoch {epoch_label}, n_samples={args.n_samples}, "
             f"sample_scale={args.sample_scale:g}, "
             f"n_basis={int(plot_data['n_basis'])}, "
-            f"ref_corr_length={plot_data['reference_corr_length']:g})"
+            f"ref_smoothing_length={plot_data['reference_corr_length']:g})"
             if plot_data["reference_corr_length"] is not None
             else
             f"Boundary reference and spline deviations "
@@ -399,7 +399,7 @@ def main(cfg, args):
         print(
             "Boundary reference:",
             "periodic B-spline fit,",
-            f"ref_corr_length={float(plot_data['reference_corr_length']):.1f}",
+            f"smoothing_length={float(plot_data['reference_corr_length']):.1f}",
         )
     else:
         print("Boundary reference: raw observed boundary values")

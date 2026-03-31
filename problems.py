@@ -16,7 +16,6 @@ from cryogen import interpolate
 from . import models
 from .fields import (
     make_spd,
-    periodic_bspline_coefficient_prior_covariance_corrlen,
     periodic_bspline_design_matrix,
     resolve_boundary_basis_config,
 )
@@ -298,6 +297,7 @@ class IceShelfProblem:
         if use_bspline_reference:
             A = self._boundary_reference_design_matrix()
             corr_length = self._boundary_reference_corr_length()
+            penalty_matrix, penalty_order = self._boundary_reference_penalty_matrix()
 
         # Smooth the boundary-condition reference, leaving observations untouched.
         for k in range(self.Nt):
@@ -314,6 +314,8 @@ class IceShelfProblem:
                             u[:, comp],
                             sigma[:, comp],
                             corr_length,
+                            penalty_matrix,
+                            penalty_order,
                         )
                         for comp in range(u.shape[1])
                     ]
@@ -348,16 +350,57 @@ class IceShelfProblem:
             degree=degree,
         )
 
+    def _boundary_reference_penalty_matrix(self):
+        n_basis, _, _ = resolve_boundary_basis_config(self.cfg, self.boundary_length)
+        degree = int(self.cfg.inverse.boundary_spline_degree)
+        penalty_order = 2 if degree >= 2 else 1
+        A_penalty = periodic_bspline_design_matrix(
+            self.boundary_s,
+            self.boundary_length,
+            n_basis=n_basis,
+            degree=degree,
+            derivative=penalty_order,
+        )
+        return A_penalty.T @ A_penalty, penalty_order
+
     def _can_use_bspline_boundary_reference(self):
         try:
             self.boundary_ref_corr_length = self._boundary_reference_corr_length()
             self._boundary_reference_design_matrix()
+            self._boundary_reference_penalty_matrix()
             return True
         except (AttributeError, ValueError):
             self.boundary_ref_corr_length = None
             return False
 
-    def _fit_boundary_reference_component(self, A, y, sigma, corr_length):
+    def _boundary_reference_regularization_strength(
+        self,
+        weights,
+        corr_length,
+        penalty_order,
+    ):
+        """
+        Convert a physical smoothing length scale into a roughness penalty.
+
+        A periodic derivative penalty of order ``m`` damps Fourier modes like
+        ``(2*pi / wavelength)^(2m)``. This choice makes wavelengths around
+        ``corr_length`` the scale where the smoothing penalty starts to
+        compete with the weighted least-squares data fit.
+        """
+        mean_weight = float(np.mean(weights))
+        if not np.isfinite(mean_weight) or mean_weight <= 0.0:
+            return 0.0
+        return mean_weight * (corr_length / (2.0 * np.pi)) ** (2 * penalty_order)
+
+    def _fit_boundary_reference_component(
+        self,
+        A,
+        y,
+        sigma,
+        corr_length,
+        penalty_matrix,
+        penalty_order,
+    ):
         y = np.asarray(y, dtype=float)
         sigma = np.asarray(sigma, dtype=float)
         sigma = np.where(
@@ -371,26 +414,17 @@ class IceShelfProblem:
         if not np.isfinite(weight_sum) or weight_sum <= 0.0:
             return y.copy()
 
-        mean_y = float(np.dot(weights, y) / weight_sum)
-        y_centered = y - mean_y
-        target_rms = float(np.sqrt(np.dot(weights, y_centered**2) / weight_sum))
-        if not np.isfinite(target_rms) or target_rms <= 1e-12:
-            return np.full_like(y, mean_y)
-
-        Sigma_ref = periodic_bspline_coefficient_prior_covariance_corrlen(
-            n=A.shape[1],
-            L=self.boundary_length,
-            sigma_alpha=target_rms,
-            corr_length=corr_length,
-            design_matrix=A,
+        penalty_strength = self._boundary_reference_regularization_strength(
+            weights,
+            corr_length,
+            penalty_order,
         )
-        Q_ref = np.linalg.inv(make_spd(Sigma_ref))
 
         A_weighted = A * np.sqrt(weights[:, None])
-        lhs = A_weighted.T @ A_weighted + Q_ref
-        rhs = A.T @ (weights * y_centered)
+        lhs = A_weighted.T @ A_weighted + penalty_strength * penalty_matrix
+        rhs = A.T @ (weights * y)
         beta = np.linalg.solve(make_spd(lhs), rhs)
-        return mean_y + A @ beta
+        return A @ beta
 
     def _smooth_boundary_legacy(self, u, alpha_mag, alpha_theta):
         def _smooth(ref_array, alpha):

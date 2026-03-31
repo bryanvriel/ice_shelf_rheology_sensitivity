@@ -54,7 +54,7 @@ def mvn_nll(z: jnp.ndarray, S: jnp.ndarray) -> float:
 mvn_nll_and_grad = jax.value_and_grad(mvn_nll)
 
 
-def periodic_bspline_design_matrix(s, L, n_basis, degree=3):
+def periodic_bspline_design_matrix(s, L, n_basis, degree=3, derivative=0):
     """
     Build a periodic B-spline design matrix A such that
         profile(s) = A @ alpha
@@ -63,6 +63,9 @@ def periodic_bspline_design_matrix(s, L, n_basis, degree=3):
     s = np.asarray(s, dtype=float)
     p = degree
     n = n_basis
+    d = int(derivative)
+    if d < 0:
+        raise ValueError("derivative must be non-negative")
     h = L / n
 
     # Wrap all coordinates into [0, L)
@@ -71,11 +74,23 @@ def periodic_bspline_design_matrix(s, L, n_basis, degree=3):
     # Uniform extended knot vector
     knots = np.arange(-p, n + p + 1, dtype=float) * h
 
-    # Ordinary spline design matrix with n+p coefficients
-    B_open = BSpline.design_matrix(s, knots, p, extrapolate=False).toarray()
+    n_ext = n + p
+
+    if d == 0:
+        # Ordinary spline design matrix with n+p coefficients
+        B_open = BSpline.design_matrix(s, knots, p, extrapolate=False).toarray()
+    elif d > p:
+        B_open = np.zeros((s.size, n_ext), dtype=float)
+    else:
+        B_open = np.zeros((s.size, n_ext), dtype=float)
+        for j in range(n_ext):
+            coeffs = np.zeros((n_ext,), dtype=float)
+            coeffs[j] = 1.0
+            basis_fn = BSpline(knots, coeffs, p, extrapolate=False).derivative(d)
+            B_open[:, j] = basis_fn(s)
 
     # Wrap matrix: c_ext = P @ alpha, with c_{n+r} = c_r
-    P = np.zeros((n + p, n))
+    P = np.zeros((n_ext, n))
     P[:n, :] = np.eye(n)
     P[n:, :p] = np.eye(p)
 
