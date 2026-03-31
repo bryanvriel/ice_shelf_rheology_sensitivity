@@ -1,107 +1,93 @@
-
+# Output and geometry files
 output_dir = "outputs_default"
-
 shelf_coords_file = "aux/coords_simplified_inverse_shelf.txt"
 
 [data]
-u_sigma = 4.0
+# Observation error model
+u_sigma = 1.0
 
 [matrix]
+# Matrix construction options
 spectral = false
 use_ref = false
 mask = "none"
 
+# Rigidity basis supports
 supports_B = [5.5e3, 11.0e3, 22.0e3]
 min_strain_B = [0.0, 0.0, 0.0]
 
+# Exponent basis supports
 supports_n = [5.5e3, 11.0e3, 22.0e3]
 min_strain_n = [0.0, 0.0, 0.0]
 
+# Wavelet base parameter
 base = 1.0
 
 [model]
+# Rigidity bounds
 B_min = 0.1
 B_max = 3.0
+
+# Glen exponent bounds
 n_min = 0.5
 n_max = 5.5
 
 [inverse]
+# Optimizer settings
+opt_type = "bfgs"
+n_iter = 4000
 lr = 0.0005
 lr_schedule = []
-dirichlet_ids = [1,]
+opt_init_seed = 744
+opt_init_amp = 0.05
 
+# BFGS tuning parameters
 bfgs_factr = 0.001
 bfgs_maxcor = 50
 
-n_iter = 4000
+# Inversion parameterization
 joint = true
 fixed_n = 3.0
-nll_scale = 1.0
+n_norm_type = "cdf"
+B_norm_type = "cdf"
+norm_scale = 3.0
 precondition = false
+hyper_params = [4.5, 2.5, 0.0]
+
+# Prior and likelihood scaling
+nll_scale = 1.0
 objective_scale = 1.0
 penalties_B = 0.0625
 penalties_n = 0.1111
 
+# Mesh and boundary treatment
 meshfile = "aux/simplified_inverse_1km.msh"
+dirichlet_ids = [1,]
 smooth_boundary = true
-n_norm_type = "cdf"
-B_norm_type = "cdf"
-norm_scale = 3.0
-opt_type = "bfgs"
-opt_init_seed = 744
-opt_init_amp = 0.05
+
+# Boundary inference parameters
 infer_boundary_velocity = false
 boundary_basis_spacing = 10000.0
 boundary_spline_degree = 3
 boundary_sigma_alpha = 50.0
 boundary_corr_length = 4000.0
 
-# Default: good for the margin experiments
-#hyper_params = [4.0, 3.0, 0.0]
-
-# Default setting for rigidity-only, fixed n, calibrated runs
-#hyper_params = [6.0, 6.0, 0.0]
-
-# Default setting for discovery runs
-#hyper_params = [3.0, 4.0, 0.0]
-
-# Default for calibration for the margin sims
-hyper_params = [5.75, 1.5, 0.0]
-
-# Try tighter variances for better predictive power?
-#hyper_params = [4.0, 2.0, 0.0]
-#hyper_params = [4.0, 4.0, 0.0]
-#hyper_params = [5.0, 4.0, 0.0]
-
-# OK for all experiments?
-#hyper_params = [4.0, 3.0, 0.0]
-# Try a slightly higher B variance
-#   - Nah, margin_exponent results are a bit too bad
-#hyper_params = [5.0, 3.0, 0.0]
-
-# Try with some prior anti-correlation
-#hyper_params = [3.25, 2.25, -0.2]
-#hyper_params = [3.0, 2.0, -0.2]
-#hyper_params = [4.0, 2.5, -0.2]
-
-# What happens with this?
-# It allows to much relative flexibility of n vs. B; the n variations are
-# modeled, sometimes overly so, but the rigidity variations become less
-# recovered. Seems like it's beneficial to increase the the B variance
-# relative to n
-#hyper_params = [3.0, 3.0, -0.2]
-
-#hyper_params = [6.0, 3.0, 0.0]
-
 [vi]
+# Monte Carlo and optimizer settings
 num_mc = 0
 lr = 8e-4
 lr_hyper = 2e-4
+
+# Initial posterior scale defaults
 sigma_B_min = 0.7
 sigma_n_min = 0.7
 sigma_B_default = 1.75
 sigma_n_default = 1.75
 rho_default = -0.25
+
+# Hyperparameter regularization
 lambda_sigma = 0.1
 lambda_rho = 0.1
+
+# Hessian stabilization
 hess_reg = 1.0
