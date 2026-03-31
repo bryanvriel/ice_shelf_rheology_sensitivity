@@ -67,12 +67,22 @@ def common_parse() -> argparse.ArgumentParser:
         default=None,
         help="Force output filename. Default: None.",
     )
+    parser.add_argument(
+        "--datafile",
+        action="store",
+        type=str,
+        default=None,
+        help="Override the default observation data filename. Default: None.",
+    )
     return parser
 
 def data_filename(cfg, args):
     outdir = cfg.output_dir
     if args is None:
         return os.path.join(outdir, "data_inverse.h5")
+    datafile = getattr(args, "datafile", None)
+    if datafile is not None:
+        return datafile
     elif args.amp == "None":
         return os.path.join(outdir, "data_inverse.h5")
     else:
