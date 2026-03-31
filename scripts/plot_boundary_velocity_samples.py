@@ -141,7 +141,11 @@ def initialize_problem(cfg, data_file, args):
         problem = IceShelfProblem(cfg, mesh, fixed_exponent=True, **kwargs)
         problem.load_observations(data_file, time_ind=[args.epoch])
 
-    cfg.inverse.boundary_smoothing_method = resolve_boundary_smoothing_method(cfg, args)
+    cfg = cfg.update(
+        "inverse.boundary_smoothing_method",
+        resolve_boundary_smoothing_method(cfg, args),
+    )
+    problem.cfg = cfg
     problem.smooth_boundaries()
 
     return problem
