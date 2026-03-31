@@ -174,6 +174,58 @@ def closed_boundary_length(coords: np.ndarray) -> float:
     return float(np.sqrt((diffs**2).sum(axis=1)).sum())
 
 
+def boundary_basis_count_from_spacing(
+    boundary_length: float,
+    basis_spacing: float,
+    degree: int,
+) -> tuple[int, float]:
+    if boundary_length <= 0:
+        raise ValueError("boundary_length must be positive")
+    if basis_spacing <= 0:
+        raise ValueError("basis_spacing must be positive")
+    if degree < 0:
+        raise ValueError("degree must be non-negative")
+
+    n_basis = int(np.ceil(boundary_length / basis_spacing))
+    n_basis = max(n_basis, degree + 1)
+    actual_spacing = boundary_length / n_basis
+    return n_basis, actual_spacing
+
+
+def resolve_boundary_basis_config(cfg, boundary_length: float) -> tuple[int, float, float | None]:
+    degree = int(cfg.inverse.boundary_spline_degree)
+    basis_spacing = getattr(cfg.inverse, "boundary_basis_spacing", None)
+    n_basis = getattr(cfg.inverse, "boundary_n_basis", None)
+
+    if basis_spacing is not None and n_basis is not None:
+        raise ValueError(
+            "Specify only one of `inverse.boundary_basis_spacing` and "
+            "`inverse.boundary_n_basis`."
+        )
+
+    if basis_spacing is not None:
+        n_basis_resolved, actual_spacing = boundary_basis_count_from_spacing(
+            boundary_length=boundary_length,
+            basis_spacing=float(basis_spacing),
+            degree=degree,
+        )
+        return n_basis_resolved, actual_spacing, float(basis_spacing)
+
+    if n_basis is not None:
+        n_basis_resolved = int(n_basis)
+        if n_basis_resolved < degree + 1:
+            raise ValueError(
+                "`inverse.boundary_n_basis` must be at least "
+                "`inverse.boundary_spline_degree + 1`."
+            )
+        return n_basis_resolved, boundary_length / n_basis_resolved, None
+
+    raise ValueError(
+        "Boundary inference requires either `inverse.boundary_basis_spacing` "
+        "or `inverse.boundary_n_basis`."
+    )
+
+
 def boundary_inference_enabled(cfg) -> bool:
     return bool(getattr(cfg.inverse, "infer_boundary_velocity", False))
 
@@ -500,12 +552,13 @@ class JointBoundaryRheologyField(eqx.Module):
     N: int = eqx.field(static=True)
     M: int = eqx.field(static=True)
     boundary_length: float = eqx.field(static=True)
+    basis_spacing: float = eqx.field(static=True)
+    basis_spacing_target: float | None = eqx.field(static=True)
 
     def __init__(self, cfg, rheology_field, problem):
         if problem.boundary_node_indices is None or problem.boundary_coords is None:
             problem._init_boundary_geometry()
 
-        n_basis = int(cfg.inverse.boundary_n_basis)
         degree = int(cfg.inverse.boundary_spline_degree)
         sigma_alpha = float(cfg.inverse.boundary_sigma_alpha)
         corr_length = float(cfg.inverse.boundary_corr_length)
@@ -522,6 +575,10 @@ class JointBoundaryRheologyField(eqx.Module):
         boundary_coords = np.asarray(problem.boundary_coords, dtype=float)
         boundary_s = np.asarray(problem.boundary_s, dtype=float)
         boundary_L = closed_boundary_length(boundary_coords)
+        n_basis, basis_spacing, basis_spacing_target = resolve_boundary_basis_config(
+            cfg,
+            boundary_L,
+        )
 
         A_np = periodic_bspline_design_matrix(
             boundary_s,
@@ -571,6 +628,8 @@ class JointBoundaryRheologyField(eqx.Module):
         self.N = self.N_rheo + 2 * self.Nt * self.n_basis
         self.M = rheology_field.M
         self.boundary_length = boundary_L
+        self.basis_spacing = float(basis_spacing)
+        self.basis_spacing_target = basis_spacing_target
 
     def epoch_alpha_slices(self, k: int):
         offset = self.N_rheo + 2 * k * self.n_basis

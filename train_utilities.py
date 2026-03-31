@@ -133,6 +133,7 @@ def inference_metadata(field):
             {
                 "n_boundary_epochs": np.int64(field.Nt),
                 "boundary_n_basis": np.int64(field.n_basis),
+                "boundary_basis_spacing": np.float64(field.basis_spacing),
                 "boundary_spline_degree": np.int64(field.degree),
                 "boundary_length": np.float64(field.boundary_length),
                 "boundary_coeff_positions": np.asarray(field.coeff_positions),
@@ -142,6 +143,10 @@ def inference_metadata(field):
                 "z_alpha_y_stop": alpha_y_stop,
             }
         )
+        if getattr(field, "basis_spacing_target", None) is not None:
+            metadata["boundary_basis_spacing_target"] = np.float64(
+                field.basis_spacing_target
+            )
 
     return metadata
 
@@ -173,6 +178,7 @@ def print_parameter_summary(field, printer=print):
             "Boundary blocks:",
             f"epochs={int(metadata['n_boundary_epochs'])}",
             f"basis={int(metadata['boundary_n_basis'])}",
+            f"spacing={float(metadata['boundary_basis_spacing']):.1f}",
             f"per-epoch params={2 * int(metadata['boundary_n_basis'])}",
         )
 

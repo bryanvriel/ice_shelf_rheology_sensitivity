@@ -11,6 +11,7 @@ import numpy as np
 import schurflow.config_utilities as cu
 import schurflow.file_utilities as fu
 from schurflow.fields import (
+    resolve_boundary_basis_config,
     closed_boundary_length,
     periodic_bspline_coefficient_prior_covariance_corrlen,
     periodic_bspline_design_matrix,
@@ -143,10 +144,13 @@ def sample_boundary_realizations(problem, cfg, n_samples, seed, sample_scale):
     boundary_nodes = np.asarray(problem.boundary_node_indices, dtype=int)
     boundary_length = closed_boundary_length(boundary_coords)
 
-    n_basis = int(cfg.inverse.boundary_n_basis)
     degree = int(cfg.inverse.boundary_spline_degree)
     sigma_alpha = float(cfg.inverse.boundary_sigma_alpha)
     corr_length = float(cfg.inverse.boundary_corr_length)
+    n_basis, basis_spacing, basis_spacing_target = resolve_boundary_basis_config(
+        cfg,
+        boundary_length,
+    )
 
     A = periodic_bspline_design_matrix(
         boundary_s,
@@ -180,6 +184,9 @@ def sample_boundary_realizations(problem, cfg, n_samples, seed, sample_scale):
         "boundary_coords": boundary_coords,
         "boundary_s": boundary_s,
         "boundary_length": boundary_length,
+        "n_basis": n_basis,
+        "basis_spacing": basis_spacing,
+        "basis_spacing_target": basis_spacing_target,
         "coeff_positions": coeff_positions,
         "u_obs": u_obs,
         "u_ref": u_ref,
@@ -337,7 +344,8 @@ def make_figure(plot_data, args, ref_label, epoch_label):
         (
             f"Boundary velocity reference and spline realizations "
             f"(epoch {epoch_label}, n_samples={args.n_samples}, "
-            f"sample_scale={args.sample_scale:g})"
+            f"sample_scale={args.sample_scale:g}, "
+            f"n_basis={int(plot_data['n_basis'])})"
         ),
         fontsize=13,
     )
@@ -357,6 +365,11 @@ def main(cfg, args):
         n_samples=args.n_samples,
         seed=args.seed,
         sample_scale=args.sample_scale,
+    )
+    print(
+        "Boundary basis:",
+        f"n_basis={int(plot_data['n_basis'])},",
+        f"spacing={float(plot_data['basis_spacing']):.1f}",
     )
 
     ref_label = (

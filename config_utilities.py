@@ -230,7 +230,6 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
     infer_boundary_velocity = _get_path(data, "inverse.infer_boundary_velocity", False)
     if infer_boundary_velocity:
         for path in (
-            "inverse.boundary_n_basis",
             "inverse.boundary_spline_degree",
             "inverse.boundary_sigma_alpha",
             "inverse.boundary_corr_length",
@@ -241,17 +240,36 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
                     "`inverse.infer_boundary_velocity = true`."
                 )
 
-        n_basis = _get_path(data, "inverse.boundary_n_basis", None)
+        n_basis = _get_path(data, "inverse.boundary_n_basis", _MISSING)
+        basis_spacing = _get_path(data, "inverse.boundary_basis_spacing", _MISSING)
         degree = _get_path(data, "inverse.boundary_spline_degree", None)
         sigma_alpha = _get_path(data, "inverse.boundary_sigma_alpha", None)
         corr_length = _get_path(data, "inverse.boundary_corr_length", None)
 
-        if not isinstance(n_basis, Number) or int(n_basis) != n_basis or n_basis < 2:
+        if n_basis is _MISSING and basis_spacing is _MISSING:
+            errors.append(
+                "Boundary inference requires either `inverse.boundary_basis_spacing` "
+                "or `inverse.boundary_n_basis`."
+            )
+        if n_basis is not _MISSING and basis_spacing is not _MISSING:
+            errors.append(
+                "Specify only one of `inverse.boundary_basis_spacing` and "
+                "`inverse.boundary_n_basis`."
+            )
+
+        if n_basis is not _MISSING and (
+            not isinstance(n_basis, Number) or int(n_basis) != n_basis or n_basis < 2
+        ):
             errors.append("`inverse.boundary_n_basis` must be an integer >= 2.")
+        if basis_spacing is not _MISSING and (
+            not isinstance(basis_spacing, Number) or basis_spacing <= 0
+        ):
+            errors.append("`inverse.boundary_basis_spacing` must be positive.")
         if not isinstance(degree, Number) or int(degree) != degree or degree < 0:
             errors.append("`inverse.boundary_spline_degree` must be a non-negative integer.")
         if (
-            isinstance(n_basis, Number)
+            n_basis is not _MISSING
+            and isinstance(n_basis, Number)
             and isinstance(degree, Number)
             and int(n_basis) == n_basis
             and int(degree) == degree
