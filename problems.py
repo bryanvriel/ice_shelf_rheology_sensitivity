@@ -291,7 +291,7 @@ class IceShelfProblem:
             + np.sqrt(((edge_coords[0] - edge_coords[-1])**2).sum())
         )
 
-    def smooth_boundaries(self, alpha_mag=3.0e3, alpha_theta=4.0e3):
+    def smooth_boundaries(self):
         self._init_boundary_geometry()
         boundary_node_indices = self.boundary_node_indices
         method = self._boundary_smoothing_method()
@@ -329,8 +329,8 @@ class IceShelfProblem:
             else:
                 u_smooth = self._smooth_boundary_legacy(
                     u,
-                    alpha_mag=alpha_mag,
-                    alpha_theta=alpha_theta,
+                    alpha_mag=corr_length,
+                    alpha_theta=corr_length,
                 )
             self.u_bc_ref[k].dat.data[boundary_node_indices] = u_smooth
             self.u_bc[k].dat.data[boundary_node_indices] = u_smooth

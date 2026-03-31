@@ -66,14 +66,14 @@ dirichlet_ids = [1,]
 
 # Boundary reference smoothing parameters
 # Choose "spline" or "helmholtz"
-boundary_smoothing_method = "spline"
-boundary_ref_corr_length = 15000.0
+boundary_smoothing_method = "helmholtz"
+boundary_ref_corr_length = 6000.0
 
 # Boundary inference parameters
-infer_boundary_velocity = false
-boundary_basis_spacing = 10000.0
+infer_boundary_velocity = true
+boundary_basis_spacing = 6000.0
 boundary_spline_degree = 3
-boundary_sigma_alpha = 50.0
+boundary_sigma_alpha = 10.0
 boundary_corr_length = 4000.0
 
 [vi]
