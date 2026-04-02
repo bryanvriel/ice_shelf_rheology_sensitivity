@@ -1,7 +1,6 @@
 extends = "default_prep_config.toml"
 
 output_dir = "outputs_margin_ref"
-velocity_scale = 0.9
 add_noise = false
 
 [data]

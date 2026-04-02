@@ -1,32 +1,8 @@
 # Shared base for preprocessing and simulation helpers.
 # Experiment-specific prep files should extend this.
 
-velocity_scale = 1.0
-mod_margins = false
-along_modulate = true
-
 add_noise = true
 filter_data = false
-
-plot = true
-
-n_spline_knots = 8
-reg_strengths = [0.01, 4.0]
-n_samples = 50000
-
-amp_max = 2.5
-amp_log_mean = -0.1
-amp_log_std = 0.15
-min_scale = 0.05
-max_scale = 2.1
-
-theta_std = 0.15
-
-seed_amp = 54
-seed_theta = 55
-
-add_trend = true
-trend_bounds = [-0.8, 0.8]
 
 [data]
 u_sigma = 4.0

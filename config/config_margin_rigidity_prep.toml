@@ -1,7 +1,6 @@
 extends = "default_prep_config.toml"
 
 output_dir = "outputs_margin_rigidity"
-velocity_scale = 0.9
 
 [sim]
 exp_in = 2.25
