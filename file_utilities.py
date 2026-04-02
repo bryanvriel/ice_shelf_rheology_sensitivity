@@ -88,9 +88,10 @@ def data_filename(cfg, args):
     else:
         loc = f"{args.loc}"
         amp = f"amp-{args.amp}"
+        seed = f"seed{cfg.data.seed:03d}"
         return os.path.join(
             outdir,
-            f"data_inverse_perturbed_{loc}_{amp}.h5",
+            f"data_inverse_perturbed_{loc}_{amp}_{seed}.h5",
         )
 
 

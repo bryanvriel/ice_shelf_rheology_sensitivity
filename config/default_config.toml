@@ -6,6 +6,9 @@ shelf_coords_file = "aux/coords_simplified_inverse_shelf.txt"
 # Observation error model
 u_sigma = 1.0
 
+# Random seed for stochastic components
+seed = 0
+
 [matrix]
 # Matrix construction options
 spectral = false
