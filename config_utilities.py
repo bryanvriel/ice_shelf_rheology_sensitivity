@@ -79,6 +79,59 @@ def _is_sequence(value: Any) -> bool:
     return isinstance(value, (list, tuple))
 
 
+def _resolve_n_basis_profile(data: dict) -> None:
+    matrix_cfg = data.get("matrix")
+    if not isinstance(matrix_cfg, dict):
+        return
+
+    profile_name = matrix_cfg.get("n_basis_profile", _MISSING)
+    if profile_name is _MISSING:
+        return
+    if profile_name == "manual":
+        return
+    if not isinstance(profile_name, str) or not profile_name:
+        raise ConfigValidationError(
+            "`matrix.n_basis_profile` must be a non-empty string or `manual`."
+        )
+
+    profiles = matrix_cfg.get("n_basis_profiles", _MISSING)
+    if profiles is _MISSING or not isinstance(profiles, dict):
+        raise ConfigValidationError(
+            "`matrix.n_basis_profiles` must be a table when "
+            "`matrix.n_basis_profile` is set."
+        )
+
+    try:
+        profile_cfg = profiles[profile_name]
+    except KeyError as exc:
+        raise ConfigValidationError(
+            f"`matrix.n_basis_profile = {profile_name!r}` does not match any "
+            "entry in `matrix.n_basis_profiles`."
+        ) from exc
+
+    if not isinstance(profile_cfg, dict):
+        raise ConfigValidationError(
+            f"`matrix.n_basis_profiles.{profile_name}` must be a table."
+        )
+
+    supports = profile_cfg.get("supports", _MISSING)
+    min_strain = profile_cfg.get("min_strain", _MISSING)
+    if supports is _MISSING or min_strain is _MISSING:
+        raise ConfigValidationError(
+            f"`matrix.n_basis_profiles.{profile_name}` must define both "
+            "`supports` and `min_strain`."
+        )
+
+    matrix_cfg["supports_n"] = deepcopy(supports)
+    matrix_cfg["min_strain_n"] = deepcopy(min_strain)
+
+
+def resolve_config_aliases(cfg: DictToStruct | dict) -> DictToStruct:
+    data = _to_dict(cfg)
+    _resolve_n_basis_profile(data)
+    return DictToStruct(data)
+
+
 def primary_penalty(penalty):
     if _is_sequence(penalty):
         if len(penalty) == 0:
@@ -88,7 +141,7 @@ def primary_penalty(penalty):
 
 
 def load_cfg_file(path: str | Path) -> DictToStruct:
-    return DictToStruct(_load_cfg_dict(Path(path), ()))
+    return resolve_config_aliases(_load_cfg_dict(Path(path), ()))
 
 
 def apply_calibration_overrides(
@@ -117,16 +170,17 @@ def load_config(
     cfg = load_cfg_file(path)
     if extra_args:
         cfg = update_cfg_with_extra(cfg, extra_args)
-    return apply_calibration_overrides(
+    cfg = apply_calibration_overrides(
         cfg,
         cal=cal,
         disc=disc,
         calibration_file=calibration_file,
     )
+    return resolve_config_aliases(cfg)
 
 
 def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictToStruct:
-    data = _to_dict(cfg)
+    data = resolve_config_aliases(cfg).todict()
     errors = []
 
     def require(path: str):
@@ -137,6 +191,11 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
         "output_dir",
         "shelf_coords_file",
         "data.u_sigma",
+        "matrix.base",
+        "matrix.supports_B",
+        "matrix.min_strain_B",
+        "matrix.supports_n",
+        "matrix.min_strain_n",
         "inverse.meshfile",
         "inverse.joint",
         "inverse.nll_scale",
@@ -176,6 +235,39 @@ def validate_cfg(cfg: DictToStruct | dict, *, require_vi: bool = False) -> DictT
 
     if _get_path(data, "inverse.joint", True) is False:
         require("inverse.fixed_n")
+
+    def validate_matrix_basis(supports_path: str, min_strain_path: str):
+        supports = _get_path(data, supports_path)
+        min_strain = _get_path(data, min_strain_path)
+
+        if not _is_sequence(supports) or len(supports) == 0:
+            errors.append(f"`{supports_path}` must be a non-empty list.")
+            return
+        if not _is_sequence(min_strain):
+            errors.append(
+                f"`{min_strain_path}` must be a list with the same length as "
+                f"`{supports_path}`."
+            )
+            return
+        if len(min_strain) != len(supports):
+            errors.append(
+                f"`{min_strain_path}` must have the same length as "
+                f"`{supports_path}`."
+            )
+            return
+        if not all(isinstance(v, Number) and v > 0 for v in supports):
+            errors.append(f"`{supports_path}` must contain positive numeric values.")
+        if not all(isinstance(v, Number) and v >= 0 for v in min_strain):
+            errors.append(
+                f"`{min_strain_path}` must contain non-negative numeric values."
+            )
+
+    validate_matrix_basis("matrix.supports_B", "matrix.min_strain_B")
+    validate_matrix_basis("matrix.supports_n", "matrix.min_strain_n")
+
+    base = _get_path(data, "matrix.base")
+    if not isinstance(base, Number) or base <= 0:
+        errors.append("`matrix.base` must be positive.")
 
     for path in ("inverse.penalties_B", "inverse.penalties_n"):
         penalty = _get_path(data, path)

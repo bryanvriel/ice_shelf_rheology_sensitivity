@@ -8,6 +8,7 @@ u_sigma = 0.5
 
 [matrix]
 use_ref = true
+n_basis_profile = "lowfreq"
 base = 1.5
 
 [inverse]

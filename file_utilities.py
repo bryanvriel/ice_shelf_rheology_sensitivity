@@ -407,7 +407,17 @@ def make_inverse_digest(
 
 
 def make_geom_digest(cfg: DictToStruct, ignore=("use_ref",)) -> str:
-    mat_cfg = cfg.matrix.todict()
+    full_mat_cfg = cfg.matrix.todict()
+    active_keys = (
+        "spectral",
+        "mask",
+        "base",
+        "supports_B",
+        "min_strain_B",
+        "supports_n",
+        "min_strain_n",
+    )
+    mat_cfg = {key: full_mat_cfg[key] for key in active_keys if key in full_mat_cfg}
     for key in ignore:
         mat_cfg.pop(key, None)
     mat_cfg['mesh'] = cfg.inverse.meshfile # matrix tied to mesh as well

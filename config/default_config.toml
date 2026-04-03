@@ -19,12 +19,21 @@ mask = "none"
 supports_B = [5.5e3, 11.0e3, 22.0e3]
 min_strain_B = [0.0, 0.0, 0.0]
 
-# Exponent basis supports
-supports_n = [5.5e3, 11.0e3, 22.0e3]
-min_strain_n = [0.0, 0.0, 0.0]
+# Exponent basis selector
+# Set to "lowfreq" for the coarser n basis, or "manual" to provide
+# supports_n/min_strain_n directly in a child config.
+n_basis_profile = "highfreq"
 
 # Wavelet base parameter
 base = 1.0
+
+[matrix.n_basis_profiles.highfreq]
+supports = [5.5e3, 11.0e3, 22.0e3]
+min_strain = [0.0, 0.0, 0.0]
+
+[matrix.n_basis_profiles.lowfreq]
+supports = [11.0e3, 22.0e3]
+min_strain = [0.0, 0.0]
 
 [model]
 # Rigidity bounds
