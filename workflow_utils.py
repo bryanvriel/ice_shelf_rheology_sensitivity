@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from dataclasses import dataclass
+import os
 from typing import Any
 
 import schurflow.config_utilities as cu
@@ -19,9 +20,28 @@ class WorkflowContext:
     converter: Any
 
 
-def resolve_output_file(cfg, args, *, data_file=None, prefix="r", ext="h5"):
-    if getattr(args, "output", None):
-        return args.output
+def _expected_output_suffix(ext: str) -> str:
+    return os.path.splitext(f"placeholder.{ext.lstrip('.')}")[1].lower()
+
+
+def _matches_output_extension(filepath: str, ext: str) -> bool:
+    return os.path.splitext(filepath)[1].lower() == _expected_output_suffix(ext)
+
+
+def resolve_output_file(
+    cfg,
+    args,
+    *,
+    data_file=None,
+    prefix="r",
+    ext="h5",
+    match_output_ext=False,
+):
+    forced_output = getattr(args, "output", None)
+    if forced_output and (
+        not match_output_ext or _matches_output_extension(forced_output, ext)
+    ):
+        return forced_output
 
     if data_file is None:
         data_file = fu.data_filename(cfg, args)
@@ -31,6 +51,20 @@ def resolve_output_file(cfg, args, *, data_file=None, prefix="r", ext="h5"):
         prefix=prefix,
         ext=ext,
         data_file=data_file,
+    )
+
+
+def resolve_map_file(cfg, args, *, data_file=None):
+    if getattr(args, "mapfile", None):
+        return args.mapfile
+
+    return resolve_output_file(
+        cfg,
+        args,
+        data_file=data_file,
+        prefix="r",
+        ext="h5",
+        match_output_ext=True,
     )
 
 
@@ -44,6 +78,7 @@ def initialize_workflow(
     mesh_degree=2,
     outfile_prefix="r",
     outfile_ext="h5",
+    match_output_ext=False,
     require_vi=False,
 ):
     cfg = cu.validate_cfg(cfg, require_vi=require_vi)
@@ -54,6 +89,7 @@ def initialize_workflow(
         data_file=data_file,
         prefix=outfile_prefix,
         ext=outfile_ext,
+        match_output_ext=match_output_ext,
     )
     field, problem, objective, converter = tu.initialize_objects(
         cfg,

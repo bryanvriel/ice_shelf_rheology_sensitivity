@@ -50,6 +50,17 @@ def parse():
         dest="map_restore_stage",
         help="Integer MAP stage to restore from. Default: latest stage.",
     )
+    parser.add_argument(
+        "--mapfile",
+        action="store",
+        type=str,
+        default=None,
+        help=(
+            "Override the MAP results file used for initialization. "
+            "If omitted, an .h5 value passed to --output is also treated as a "
+            "MAP-file override."
+        ),
+    )
     return parser.parse_known_args()
 
 
@@ -95,8 +106,9 @@ def main(cfg, args):
         require_vi=True,
         outfile_prefix="v",
         outfile_ext=checkpoint_ext,
+        match_output_ext=True,
     )
-    mapfile = fu.make_results_filename(ctx.cfg, data_file=ctx.data_file)
+    mapfile = wu.resolve_map_file(ctx.cfg, args, data_file=ctx.data_file)
     _, map_restore_group = wu.resolve_restore_stage(
         mapfile,
         args.map_restore_stage,
