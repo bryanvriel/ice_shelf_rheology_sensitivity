@@ -6,7 +6,10 @@ from copy import deepcopy
 from numbers import Number
 from pathlib import Path
 from typing import Any
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 
 from jbao.utils import DictToStruct, update_cfg_with_extra
 
