@@ -3,6 +3,7 @@
 import numpy as np
 from scipy.interpolate import BSpline
 from scipy.linalg import block_diag, solve_triangular
+from scipy.special import erf
 import h5py
 
 import jax
@@ -12,6 +13,65 @@ import cryogen
 
 from .config_utilities import primary_penalty, validate_cfg
 from .file_utilities import make_matrix_filename
+
+
+def _inv_norm_tanh(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
+    A = 0.5 * (high - low)
+    C0 = 0.5 * (high + low)
+    return A * np.tanh(θ / tau) + C0
+
+
+def _inv_norm_arctan(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
+    m = 0.5 * (low + high)
+    r = 0.5 * (high - low)
+    s = 2 / np.pi * r
+    return m + s * np.arctan(θ / tau)
+
+
+def _inv_norm_cdf(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
+    u = 0.5 * (1.0 + erf(θ / (tau * np.sqrt(2.0))))
+    return low + (high - low) * u
+
+
+def _inv_norm_log(θ, C0=1.0, **kwargs):
+    return C0 * np.exp(θ)
+
+
+def _inv_norm_softplus(θ, low=0.1, high=5.0, tau=2, **kwargs):
+    loc = 0.5 * (high + low)
+    scale = (high - low) / (2 * tau)
+
+    delta = np.log(np.expm1(loc))
+    slope = 1.0 - np.exp(-loc)
+    latent_scale = scale / slope
+
+    return np.logaddexp(0.0, latent_scale * θ + delta)
+
+
+_INV_NORM_MAPPING = {
+    "tanh": _inv_norm_tanh,
+    "arctan": _inv_norm_arctan,
+    "cdf": _inv_norm_cdf,
+    "log": _inv_norm_log,
+    "sp": _inv_norm_softplus,
+    "softplus": _inv_norm_softplus,
+}
+
+
+def inv_norm(θ, opts, norm_type):
+    """
+    Compute inverse normalization with NumPy/SciPy only.
+
+    This mirrors the normalization choices used by the Firedrake-facing model
+    code so light-weight scripts can unnormalize arrays without importing
+    `models.py` or `problems.py`.
+    """
+    if norm_type not in _INV_NORM_MAPPING:
+        raise ValueError(f"Unsupported norm type: {norm_type}")
+    opts = {} if opts is None else dict(opts)
+    θ = np.asarray(θ, dtype=float)
+    return np.asarray(_INV_NORM_MAPPING[norm_type](θ, **opts))
+
 
 def make_spd(
     A: np.ndarray,
