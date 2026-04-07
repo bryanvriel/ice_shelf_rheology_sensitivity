@@ -56,7 +56,7 @@ def terminus_perturbation(**kwargs):
     τ_W = ρ_W * g * d**2 / 2
 
     # Differential stress normal to the element faces
-    ν = firedrake.FacetNormal(u.ufl_domain())
+    ν = firedrake.FacetNormal(u.function_space().mesh())
     return (τ_I - τ_W) * inner(u, ν)
 
 
