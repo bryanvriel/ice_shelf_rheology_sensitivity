@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from copy import deepcopy
 import numpy as np
 import jax.numpy as jnp
 import argparse
@@ -260,6 +261,112 @@ def load_state_from_group(template_state, filepath: str, group_name: str, verbos
     if verbose:
         print(f"✅ Optimizer state loaded from group '{group_name}' in {filepath}")
     return loaded_state, opt_type
+
+
+def _cfg_to_dict(cfg: DictToStruct | dict) -> dict:
+    if isinstance(cfg, DictToStruct):
+        return cfg.todict()
+    return deepcopy(cfg)
+
+
+def _save_json_tree(group: h5py.Group, data: dict) -> None:
+    for key, value in data.items():
+        if not isinstance(key, str):
+            raise TypeError(
+                "Config snapshot keys must be strings; "
+                f"got {type(key).__name__!s}."
+            )
+        if isinstance(value, dict):
+            subgroup = group.create_group(key)
+            _save_json_tree(subgroup, value)
+            continue
+        payload = json.dumps(
+            _canonicalize(value),
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        group.create_dataset(key, data=np.bytes_(payload))
+
+
+def _load_json_tree(group: h5py.Group) -> dict:
+    data = {}
+    for key, item in group.items():
+        if isinstance(item, h5py.Group):
+            data[key] = _load_json_tree(item)
+            continue
+        raw = item.asstr()[()]
+        if isinstance(raw, np.ndarray):
+            raw = raw.item()
+        data[key] = json.loads(raw)
+    return data
+
+
+def save_cfg_to_group(cfg, filepath: str, group_name: str, verbose=True):
+    """Save a fully materialized config snapshot to a dedicated HDF5 group."""
+    cfg_dict = _cfg_to_dict(cfg)
+    with h5py.File(filepath, "a") as f:
+        if group_name in f:
+            del f[group_name]
+        group = f.create_group(group_name)
+        group.attrs["encoding"] = "json-tree-v1"
+        group.attrs["resolved"] = True
+        _save_json_tree(group, cfg_dict)
+
+    if verbose:
+        print(f"✅ Config snapshot saved to group '{group_name}' in {filepath}")
+
+
+def load_cfg_dict_from_group(filepath: str, group_name: str, verbose=True) -> dict:
+    """Load a config snapshot from an HDF5 group as a plain dictionary."""
+    with h5py.File(filepath, "r") as f:
+        if group_name not in f:
+            raise ValueError(f"Group '{group_name}' not found in {filepath}")
+        data = _load_json_tree(f[group_name])
+
+    if verbose:
+        print(f"✅ Config snapshot loaded from group '{group_name}' in {filepath}")
+    return data
+
+
+def load_cfg_from_group(
+    filepath: str,
+    group_name: str,
+    *,
+    validate=False,
+    require_vi=False,
+    verbose=True,
+):
+    """Load a config snapshot from HDF5 and rebuild it as a `DictToStruct`."""
+    import schurflow.config_utilities as cu
+
+    data = load_cfg_dict_from_group(filepath, group_name, verbose=verbose)
+    if validate:
+        return cu.validate_cfg(data, require_vi=require_vi)
+    return cu.resolve_config_aliases(data)
+
+
+def load_cfg_from_results_file(
+    filepath: str,
+    *,
+    stage=None,
+    group=None,
+    validate=False,
+    require_vi=False,
+    verbose=True,
+):
+    """Load a saved stage config directly from a MAP results file."""
+    if stage is not None and group is not None:
+        raise ValueError("Pass at most one of `stage` or `group`.")
+    if group is None:
+        group = get_latest_stage(filepath) if stage is None else f"stage{stage}"
+    cfg_group = group if str(group).endswith("/cfg") else f"{group}/cfg"
+    return load_cfg_from_group(
+        filepath,
+        cfg_group,
+        validate=validate,
+        require_vi=require_vi,
+        verbose=verbose,
+    )
 
 
 _STAGE_KEY_PATTERN = re.compile(r"^stage(\d+)$")

@@ -98,6 +98,13 @@ def main(cfg, args):
                 extra_data={"losses": losses, **metadata},
             )
 
+            fu.save_cfg_to_group(
+                ctx.cfg,
+                ctx.outfile,
+                f"stage{stage}/cfg",
+                verbose=False,
+            )
+
             # Also write optimizer state
             fu.save_state_to_group(
                 opt_state,
