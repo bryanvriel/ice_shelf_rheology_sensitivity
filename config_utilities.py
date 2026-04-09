@@ -158,8 +158,14 @@ def apply_calibration_overrides(
         return cfg
 
     cal_cfg = load_cfg_file(calibration_file).todict()[cfg.output_dir]
-    key = "calibration_hyper_params" if cal else "discovery_hyper_params"
-    return cfg.update("inverse.hyper_params", cal_cfg[key])
+    if cal:
+        corr_length = cal_cfg["cal_boundary_corr_length"]
+        hyper = cal_cfg["calibration_hyper_params"]
+    else:
+        corr_length = cal_cfg["disc_boundary_corr_length"]
+        hyper = cal_cfg["discovery_hyper_params"]
+    cfg = cfg.update("inverse.boundary_ref_corr_length", corr_length)
+    return cfg.update("inverse.hyper_params", hyper)
 
 
 def load_config(
