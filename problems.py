@@ -591,6 +591,19 @@ class IceShelfProblem:
             return self._data_nll_covariance(u_pred)
         return self._data_nll_independent(u_pred)
 
+    def _forward_with_rheology(self, bc_controls, B, n_exp):
+        u_pred = []
+        for k in range(self.Nt):
+            u_pred.append(
+                self.solvers[k].diagnostic_solve(
+                    velocity=bc_controls[k],
+                    thickness=self.h,
+                    rigidity=B,
+                    flow_law_exponent=n_exp,
+                )
+            )
+        return u_pred
+
     def _forward_joint(self, params):
 
         # Unpack and un-normalize parameters
@@ -598,38 +611,14 @@ class IceShelfProblem:
         n_exp = assemble(firedrake.interpolate(self._inv_norm_n(θ_n), self.Q))
         B = assemble(firedrake.interpolate(self._inv_norm_B(θ_B), self.Q))
 
-        # Loop over epochs to compute velocities
-        u_pred = []
-        for k in range(self.Nt):
-            u_pred.append(
-                self.solvers[k].diagnostic_solve(
-                    velocity=bc_controls[k],
-                    thickness=self.h,
-                    rigidity=B,
-                    flow_law_exponent=n_exp,
-                )
-            )
-
-        return u_pred
+        return self._forward_with_rheology(bc_controls, B, n_exp)
 
     def _forward_fixed_exponent(self, params):
         θ_B, _, bc_controls = self.split_controls(params)
         B = assemble(firedrake.interpolate(self._inv_norm_B(θ_B), self.Q))
         n_exp = assemble(firedrake.interpolate(self._inv_norm_n(self.θ_n), self.Q))
 
-        # Loop over epochs to compute velocities
-        u_pred = []
-        for k in range(self.Nt):
-            u_pred.append(
-                self.solvers[k].diagnostic_solve(
-                    velocity=bc_controls[k],
-                    thickness=self.h,
-                    rigidity=B,
-                    flow_law_exponent=n_exp,
-                )
-            )
-
-        return u_pred
+        return self._forward_with_rheology(bc_controls, B, n_exp)
 
     def _data_nll_independent(self, u_pred):
         misfits = []
