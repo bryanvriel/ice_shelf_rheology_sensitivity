@@ -510,6 +510,168 @@ def _compute_metrics_from_mesh_epochs(
     }
 
 
+class VelocityErrorMetricsEvaluator:
+    """Cache mesh-dependent data for repeated velocity error computations."""
+
+    def __init__(
+        self,
+        cfg: Any = None,
+        *,
+        mesh=None,
+        meshfile: str | Path | None = None,
+        dirichlet_ids: Sequence[int] | str | None = None,
+        mesh_degree: int = 2,
+        exclude_boundary: bool = True,
+    ):
+        cfg, cfg_dir = _load_cfg_like(cfg)
+        meshfile = _resolve_meshfile(meshfile, cfg, cfg_dir)
+        if dirichlet_ids is None and cfg is not None:
+            dirichlet_ids = getattr(cfg.inverse, "dirichlet_ids", [])
+        dirichlet_ids = _normalize_dirichlet_ids(dirichlet_ids)
+
+        self.mesh_degree = int(mesh_degree)
+        self.exclude_boundary = bool(exclude_boundary)
+        self.meshfile = meshfile
+        self.dirichlet_ids = dirichlet_ids
+
+        self.mesh, self.coords, self.boundary_nodes, self.interior_mask = _build_node_mask(
+            mesh=mesh,
+            meshfile=meshfile,
+            dirichlet_ids=dirichlet_ids,
+            mesh_degree=self.mesh_degree,
+            exclude_boundary=self.exclude_boundary,
+        )
+        self.mesh_coords = (self.coords[:, 0], self.coords[:, 1])
+
+    @property
+    def n_nodes(self) -> int:
+        return int(self.coords.shape[0])
+
+    def compute_on_mesh(
+        self,
+        pred_velocity: Any,
+        obs_velocity: Any,
+        *,
+        prediction_epoch_ids: Sequence[int] | None = None,
+        observation_epoch_ids: Sequence[int] | None = None,
+    ) -> dict[str, Any]:
+        pred_epochs = _normalize_mesh_velocity_epochs(pred_velocity, self.n_nodes)
+        obs_epochs = _normalize_mesh_velocity_epochs(obs_velocity, self.n_nodes)
+
+        return _compute_metrics_from_mesh_epochs(
+            pred_epochs,
+            obs_epochs,
+            coords=self.coords,
+            boundary_nodes=self.boundary_nodes,
+            interior_mask=self.interior_mask,
+            prediction_epoch_ids=prediction_epoch_ids,
+            observation_epoch_ids=observation_epoch_ids,
+            group=None,
+            meshfile=self.meshfile,
+            mesh_degree=self.mesh_degree,
+            exclude_boundary=self.exclude_boundary,
+            dirichlet_ids=self.dirichlet_ids,
+        )
+
+    def compute_from_grids(
+        self,
+        pred_grids: np.ndarray,
+        pred_grid_coords: tuple[np.ndarray, np.ndarray],
+        obs_grids: np.ndarray,
+        obs_grid_coords: tuple[np.ndarray, np.ndarray],
+        *,
+        prediction_epoch_ids: Sequence[int] | None = None,
+        observation_epoch_ids: Sequence[int] | None = None,
+        group: str | None = None,
+    ) -> dict[str, Any]:
+        pred_grids = np.asarray(pred_grids)
+        obs_grids = np.asarray(obs_grids)
+
+        if pred_grids.ndim != 4:
+            raise ValueError(
+                f"Predicted velocity datasets must stack to shape (Nt, n_comp, Ny, Nx); "
+                f"got {pred_grids.shape}."
+            )
+        if obs_grids.ndim != 4:
+            raise ValueError(
+                f"Observation velocity datasets must stack to shape (Nt, n_comp, Ny, Nx); "
+                f"got {obs_grids.shape}."
+            )
+        if pred_grids.shape[0] != obs_grids.shape[0]:
+            raise ValueError(
+                "Prediction and observation files contain different numbers of epochs: "
+                f"{pred_grids.shape[0]} predicted vs {obs_grids.shape[0]} observed. "
+                "Use `epoch_indices` to choose matching observation epochs."
+            )
+        if pred_grids.shape[1] != obs_grids.shape[1]:
+            raise ValueError(
+                "Prediction and observation component counts differ: "
+                f"{pred_grids.shape[1]} vs {obs_grids.shape[1]}."
+            )
+
+        pred_epochs = []
+        obs_epochs = []
+        for local_epoch in range(pred_grids.shape[0]):
+            pred_epochs.append(
+                _grid_to_mesh_array(
+                    pred_grids[local_epoch],
+                    pred_grid_coords,
+                    self.mesh_coords,
+                )
+            )
+            obs_epochs.append(
+                _grid_to_mesh_array(
+                    obs_grids[local_epoch],
+                    obs_grid_coords,
+                    self.mesh_coords,
+                )
+            )
+
+        return _compute_metrics_from_mesh_epochs(
+            np.stack(pred_epochs, axis=0),
+            np.stack(obs_epochs, axis=0),
+            coords=self.coords,
+            boundary_nodes=self.boundary_nodes,
+            interior_mask=self.interior_mask,
+            prediction_epoch_ids=prediction_epoch_ids,
+            observation_epoch_ids=observation_epoch_ids,
+            group=group,
+            meshfile=self.meshfile,
+            mesh_degree=self.mesh_degree,
+            exclude_boundary=self.exclude_boundary,
+            dirichlet_ids=self.dirichlet_ids,
+        )
+
+    def compute_from_files(
+        self,
+        result_file: str | Path,
+        data_file: str | Path,
+        *,
+        stage: int | str | None = None,
+        group: str | None = None,
+        epoch_indices: Sequence[int] | None = None,
+    ) -> dict[str, Any]:
+        group_name = _resolve_stage_group(result_file, stage=stage, group=group)
+        pred_grids, pred_grid_coords, pred_epoch_ids = _load_prediction_grids(
+            result_file,
+            group_name,
+        )
+        obs_grids, obs_grid_coords, obs_epoch_ids = _load_observation_grids(
+            data_file,
+            epoch_indices=epoch_indices,
+        )
+
+        return self.compute_from_grids(
+            pred_grids,
+            pred_grid_coords,
+            obs_grids,
+            obs_grid_coords,
+            prediction_epoch_ids=pred_epoch_ids,
+            observation_epoch_ids=obs_epoch_ids,
+            group=group_name,
+        )
+
+
 def compute_velocity_error_metrics_on_mesh(
     pred_velocity: Any,
     obs_velocity: Any,
@@ -539,37 +701,25 @@ def compute_velocity_error_metrics_on_mesh(
         Same boundary-mask arguments as `compute_velocity_error_metrics(...)`.
     prediction_epoch_ids, observation_epoch_ids
         Optional labels to carry into the returned `per_epoch` entries.
-    """
-    cfg, cfg_dir = _load_cfg_like(cfg)
-    meshfile = _resolve_meshfile(meshfile, cfg, cfg_dir)
-    if dirichlet_ids is None and cfg is not None:
-        dirichlet_ids = getattr(cfg.inverse, "dirichlet_ids", [])
-    dirichlet_ids = _normalize_dirichlet_ids(dirichlet_ids)
 
-    _, coords, boundary_nodes, interior_mask = _build_node_mask(
+    Notes
+    -----
+    For repeated evaluations on the same mesh, prefer constructing
+    `VelocityErrorMetricsEvaluator(...)` once and reusing `compute_on_mesh(...)`.
+    """
+    evaluator = VelocityErrorMetricsEvaluator(
+        cfg,
         mesh=mesh,
         meshfile=meshfile,
         dirichlet_ids=dirichlet_ids,
         mesh_degree=mesh_degree,
         exclude_boundary=exclude_boundary,
     )
-
-    pred_epochs = _normalize_mesh_velocity_epochs(pred_velocity, coords.shape[0])
-    obs_epochs = _normalize_mesh_velocity_epochs(obs_velocity, coords.shape[0])
-
-    return _compute_metrics_from_mesh_epochs(
-        pred_epochs,
-        obs_epochs,
-        coords=coords,
-        boundary_nodes=boundary_nodes,
-        interior_mask=interior_mask,
+    return evaluator.compute_on_mesh(
+        pred_velocity,
+        obs_velocity,
         prediction_epoch_ids=prediction_epoch_ids,
         observation_epoch_ids=observation_epoch_ids,
-        group=None,
-        meshfile=meshfile,
-        mesh_degree=mesh_degree,
-        exclude_boundary=exclude_boundary,
-        dirichlet_ids=dirichlet_ids,
     )
 
 
@@ -622,88 +772,31 @@ def compute_velocity_error_metrics(
     -------
     dict
         Nested metrics dictionary with aggregate and per-epoch errors.
+
+    Notes
+    -----
+    For repeated evaluations on the same mesh, prefer constructing
+    `VelocityErrorMetricsEvaluator(...)` once and reusing `compute_from_files(...)`.
     """
-    cfg, cfg_dir = _load_cfg_like(cfg)
-    meshfile = _resolve_meshfile(meshfile, cfg, cfg_dir)
-    if dirichlet_ids is None and cfg is not None:
-        dirichlet_ids = getattr(cfg.inverse, "dirichlet_ids", [])
-    dirichlet_ids = _normalize_dirichlet_ids(dirichlet_ids)
-
-    group_name = _resolve_stage_group(result_file, stage=stage, group=group)
-    pred_grids, pred_grid_coords, pred_epoch_ids = _load_prediction_grids(
-        result_file,
-        group_name,
-    )
-    obs_grids, obs_grid_coords, obs_epoch_ids = _load_observation_grids(
-        data_file,
-        epoch_indices=epoch_indices,
-    )
-
-    if pred_grids.ndim != 4:
-        raise ValueError(
-            f"Predicted velocity datasets must stack to shape (Nt, n_comp, Ny, Nx); "
-            f"got {pred_grids.shape}."
-        )
-
-    if pred_grids.shape[0] != obs_grids.shape[0]:
-        raise ValueError(
-            "Prediction and observation files contain different numbers of epochs: "
-            f"{pred_grids.shape[0]} predicted vs {obs_grids.shape[0]} observed. "
-            "Use `epoch_indices` to choose matching observation epochs."
-        )
-
-    if pred_grids.shape[1] != obs_grids.shape[1]:
-        raise ValueError(
-            "Prediction and observation component counts differ: "
-            f"{pred_grids.shape[1]} vs {obs_grids.shape[1]}."
-        )
-
-    _, coords, boundary_nodes, interior_mask = _build_node_mask(
+    evaluator = VelocityErrorMetricsEvaluator(
+        cfg,
         mesh=mesh,
         meshfile=meshfile,
         dirichlet_ids=dirichlet_ids,
         mesh_degree=mesh_degree,
         exclude_boundary=exclude_boundary,
     )
-
-    mesh_coords = (coords[:, 0], coords[:, 1])
-    pred_epochs = []
-    obs_epochs = []
-
-    for local_epoch, (pred_epoch_id, obs_epoch_id) in enumerate(
-        zip(pred_epoch_ids, obs_epoch_ids)
-    ):
-        pred_mesh = _grid_to_mesh_array(
-            pred_grids[local_epoch],
-            pred_grid_coords,
-            mesh_coords,
-        )
-        obs_mesh = _grid_to_mesh_array(
-            obs_grids[local_epoch],
-            obs_grid_coords,
-            mesh_coords,
-        )
-
-        pred_epochs.append(pred_mesh)
-        obs_epochs.append(obs_mesh)
-
-    return _compute_metrics_from_mesh_epochs(
-        np.stack(pred_epochs, axis=0),
-        np.stack(obs_epochs, axis=0),
-        coords=coords,
-        boundary_nodes=boundary_nodes,
-        interior_mask=interior_mask,
-        prediction_epoch_ids=pred_epoch_ids,
-        observation_epoch_ids=obs_epoch_ids,
-        group=group_name,
-        meshfile=meshfile,
-        mesh_degree=mesh_degree,
-        exclude_boundary=exclude_boundary,
-        dirichlet_ids=dirichlet_ids,
+    return evaluator.compute_from_files(
+        result_file,
+        data_file,
+        stage=stage,
+        group=group,
+        epoch_indices=epoch_indices,
     )
 
 
 __all__ = [
+    "VelocityErrorMetricsEvaluator",
     "compute_velocity_error_metrics",
     "compute_velocity_error_metrics_on_mesh",
 ]
