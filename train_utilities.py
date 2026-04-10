@@ -20,7 +20,12 @@ from iceinfer import Timer
 from .config_utilities import validate_cfg
 from . import models
 from .problems import make_mesh, IceShelfProblem
-from .objectives import PosteriorObjective, DataObjective
+from .objectives import (
+    PosteriorObjective,
+    DataObjective,
+    _controls_to_array,
+    _set_controls_from_array,
+)
 from .fields import boundary_inference_enabled, create_inference_field
 from .utilities import NumpyConverter
 
@@ -508,19 +513,85 @@ def unpack_hess_inv(result):
     return hess_inv
 
 
-def generate_predictions(z, field, problem, objective, converter, θ_np=None):
-    if z is None:
-        raise ValueError("generate_predictions() requires latent parameters `z`.")
+def _normalize_physical_controls(fields_np, problem, objective):
+    """
+    Convert a direct physical control array into the normalized control space.
+
+    The input layout matches the flattened Firedrake controls used by the
+    objective. Rheology controls are interpreted as physical B/n fields on the
+    problem mesh; any trailing boundary-velocity controls are already in their
+    native space and are passed through unchanged.
+    """
+    controls = objective.copy_controls()
+    _set_controls_from_array(controls, np.asarray(fields_np, dtype=float))
+
+    θ_B_raw, θ_n_control, bc_controls = problem.split_controls(controls)
+
+    if problem.fixed_exponent:
+        n_raw = assemble(fd_interpolate(problem._inv_norm_n(θ_n_control), problem.Q))
+    else:
+        θ_n_norm = assemble(fd_interpolate(problem._fwd_norm_n(θ_n_control), problem.Q))
+        n_raw = assemble(fd_interpolate(θ_n_control, problem.Q))
+
+    if hasattr(problem, "_fwd_norm_B"):
+        θ_B_norm = assemble(fd_interpolate(problem._fwd_norm_B(θ_B_raw), problem.Q))
+    else:
+        θ_B_norm = assemble(
+            fd_interpolate(
+                ln(0.5 * θ_B_raw) + (1 - n_raw) / n_raw * problem.log_e_ref,
+                problem.Q,
+            )
+        )
+
+    normalized_controls = [θ_B_norm]
+    if not problem.fixed_exponent:
+        normalized_controls.append(θ_n_norm)
+    if problem.infer_boundary_velocity:
+        normalized_controls.extend(bc_controls)
+
+    return _controls_to_array(normalized_controls)
+
+
+def generate_predictions(z, field, problem, objective, converter, θ_np=None, fields_np=None):
+    """
+    Run the forward model and export predictions on the converter grid.
+
+    By default the controls are built from the latent vector `z`. Passing
+    `θ_np` overrides that path with a normalized control array directly.
+    Passing `fields_np` provides a physical-space control array whose rheology
+    fields are normalized here before evaluation. If `z` is omitted, the loss
+    falls back to the data-objective portion when available.
+    """
+    if θ_np is not None and fields_np is not None:
+        raise ValueError(
+            "generate_predictions() accepts only one of `θ_np` or `fields_np`."
+        )
+    if z is None and θ_np is None and fields_np is None:
+        raise ValueError(
+            "generate_predictions() requires `z`, `θ_np`, or `fields_np`."
+        )
 
     problem.reset_solver()
 
     # Unpack to controls
     if θ_np is None:
-        θ_np = field(z)
+        if fields_np is not None:
+            θ_np = _normalize_physical_controls(fields_np, problem, objective)
+        else:
+            θ_np = field(z)
 
-    if hasattr(objective, "evaluate_with_state"):
-        loss, controls, preds = objective.evaluate_with_state(z, x=θ_np)
+    eval_objective = objective
+    if z is None and hasattr(objective, "data_objective"):
+        eval_objective = objective.data_objective
+
+    if hasattr(eval_objective, "evaluate_with_state"):
+        loss, controls, preds = eval_objective.evaluate_with_state(z, x=θ_np)
     else:
+        if z is None:
+            raise ValueError(
+                "generate_predictions() needs `z` when the objective cannot "
+                "evaluate a direct control array."
+            )
         loss = objective.loss(z)
         objective.set_control_array(θ_np)
         controls = objective.copy_controls()
@@ -566,8 +637,9 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None):
             out_preds[f"u_obs_boundary{i}"] = np.asarray(
                 problem.u_obs[i].dat.data_ro[boundary_nodes, :].copy()
             )
-            out_preds[f"alpha_x{i}"] = np.asarray(z[sx])
-            out_preds[f"alpha_y{i}"] = np.asarray(z[sy])
+            if z is not None:
+                out_preds[f"alpha_x{i}"] = np.asarray(z[sx])
+                out_preds[f"alpha_y{i}"] = np.asarray(z[sy])
     else:
         for i, bc in enumerate(bc_controls):
             out_preds[f"u_bc{i}"] = converter(bc)
