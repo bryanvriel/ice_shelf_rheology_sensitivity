@@ -552,15 +552,35 @@ def _normalize_physical_controls(fields_np, problem, objective):
     return _controls_to_array(normalized_controls)
 
 
-def generate_predictions(z, field, problem, objective, converter, θ_np=None, fields_np=None):
+def generate_predictions(
+    z,
+    field,
+    problem,
+    objective,
+    converter=None,
+    θ_np=None,
+    fields_np=None,
+    *,
+    include_grid=True,
+    include_mesh=False,
+):
     """
-    Run the forward model and export predictions on the converter grid.
+    Run the forward model and export predictions on requested output layouts.
 
     By default the controls are built from the latent vector `z`. Passing
     `θ_np` overrides that path with a normalized control array directly.
     Passing `fields_np` provides a physical-space control array whose rheology
     fields are normalized here before evaluation. If `z` is omitted, the loss
     falls back to the data-objective portion when available.
+
+    Parameters
+    ----------
+    include_grid
+        If True, export gridded fields through `converter`. This preserves the
+        historical behavior of this helper.
+    include_mesh
+        If True, also export velocity and boundary-control arrays directly on
+        the inversion mesh.
     """
     if θ_np is not None and fields_np is not None:
         raise ValueError(
@@ -569,6 +589,10 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None, fi
     if z is None and θ_np is None and fields_np is None:
         raise ValueError(
             "generate_predictions() requires `z`, `θ_np`, or `fields_np`."
+        )
+    if include_grid and converter is None:
+        raise ValueError(
+            "generate_predictions() requires `converter` when `include_grid=True`."
         )
 
     problem.reset_solver()
@@ -599,25 +623,33 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None, fi
 
     θ_B, θ_n, bc_controls = problem.split_controls(controls)
 
-    # Output coordinates
-    Ny_out, Nx_out = converter.out_shape
-    x_out = np.linspace(converter.xarr[0], converter.xarr[-1], Nx_out)
-    y_out = np.linspace(converter.yarr[0], converter.yarr[-1], Ny_out)
-
     # Evaluate rheology fields
-    out_preds = {"z": z, "x": x_out, "y": y_out, "final_loss": loss}
+    out_preds = {"z": z, "final_loss": loss}
+    if include_grid:
+        Ny_out, Nx_out = converter.out_shape
+        x_out = np.linspace(converter.xarr[0], converter.xarr[-1], Nx_out)
+        y_out = np.linspace(converter.yarr[0], converter.yarr[-1], Ny_out)
+        out_preds["x"] = x_out
+        out_preds["y"] = y_out
+    if include_mesh:
+        out_preds["mesh_coords"] = np.asarray(problem.coords)
+
     n = problem._inv_norm_n(θ_n)
     B = problem._inv_norm_B(θ_B)
 
     # Also evaluate reference viscosity field
     log_nu = ln(0.5 * B) + (1 - n) / n * problem.log_e_ref
 
-    out_preds["B"] = converter(assemble(fd_interpolate(B, problem.Q)))
-    out_preds["n"] = converter(assemble(fd_interpolate(n, problem.Q)))
-    out_preds["log_nu"] = converter(assemble(fd_interpolate(log_nu, problem.Q)))
+    if include_grid:
+        out_preds["B"] = converter(assemble(fd_interpolate(B, problem.Q)))
+        out_preds["n"] = converter(assemble(fd_interpolate(n, problem.Q)))
+        out_preds["log_nu"] = converter(assemble(fd_interpolate(log_nu, problem.Q)))
 
     for i, p in enumerate(preds):
-        out_preds[f"u{i}"] = converter(p)
+        if include_grid:
+            out_preds[f"u{i}"] = converter(p)
+        if include_mesh:
+            out_preds[f"u_mesh{i}"] = np.asarray(p.dat.data_ro.copy())
 
     if hasattr(field, "epoch_alpha_slices"):
         boundary_nodes = np.asarray(problem.boundary_node_indices)
@@ -642,7 +674,10 @@ def generate_predictions(z, field, problem, objective, converter, θ_np=None, fi
                 out_preds[f"alpha_y{i}"] = np.asarray(z[sy])
     else:
         for i, bc in enumerate(bc_controls):
-            out_preds[f"u_bc{i}"] = converter(bc)
+            if include_grid:
+                out_preds[f"u_bc{i}"] = converter(bc)
+            if include_mesh:
+                out_preds[f"u_bc_mesh{i}"] = np.asarray(bc.dat.data_ro.copy())
 
     return out_preds
 
@@ -654,6 +689,24 @@ def velocity_components_from_predictions(preds, n_steps):
     v_pred = np.zeros(shape, dtype=np.asarray(v0).dtype)
     for i in range(n_steps):
         u_pred[i], v_pred[i] = preds[f"u{i}"]
+    return u_pred, v_pred
+
+
+def mesh_velocity_components_from_predictions(preds, n_steps):
+    u0 = np.asarray(preds["u_mesh0"])
+    if u0.ndim != 2 or u0.shape[1] != 2:
+        raise ValueError(
+            "Mesh velocity predictions must have shape (n_nodes, 2) for 2D "
+            f"velocity fields, got {u0.shape}."
+        )
+
+    shape = (n_steps, u0.shape[0])
+    u_pred = np.zeros(shape, dtype=u0.dtype)
+    v_pred = np.zeros(shape, dtype=u0.dtype)
+    for i in range(n_steps):
+        u_mesh = np.asarray(preds[f"u_mesh{i}"])
+        u_pred[i] = u_mesh[:, 0]
+        v_pred[i] = u_mesh[:, 1]
     return u_pred, v_pred
 
 
