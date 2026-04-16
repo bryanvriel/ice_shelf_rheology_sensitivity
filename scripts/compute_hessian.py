@@ -21,6 +21,15 @@ def parse():
         parents=[fu.common_parse()],
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+    for action in parser._actions:
+        if action.dest == "cfg":
+            action.nargs = "?"
+            action.default = None
+            action.help = (
+                "Input configuration file. If omitted, load the saved config "
+                "from the MAP results file passed with --output."
+            )
+            break
 
     parser.add_argument(
         "-rh",
@@ -34,6 +43,14 @@ def parse():
         action="store_true",
         dest="plot",
         help="Plot eigenvalues and exit.",
+    )
+
+    parser.add_argument(
+        "-p_path",
+        action="store",
+        type=str,
+        default=None,
+        help="Path to save figure instead of showing it.",
     )
 
     parser.add_argument(
@@ -62,6 +79,31 @@ def parse():
     return parser.parse_known_args()
 
 
+def load_runtime_config(args, extra_args):
+    if args.cfg is not None:
+        return cu.load_config(
+            args.cfg,
+            extra_args=extra_args,
+            cal=getattr(args, "cal", False),
+            disc=getattr(args, "disc", False),
+        )
+
+    results_file = getattr(args, "output", None)
+    if results_file is None:
+        raise ValueError(
+            "No config file was provided. Pass either a config path or "
+            "`--output <map-results.h5>` so the config can be loaded from the "
+            "results file."
+        )
+
+    return fu.load_cfg_from_results_file(
+        results_file,
+        stage=args.restore_stage,
+        validate=True,
+        require_vi=True,
+    )
+
+
 def main(cfg, args):
 
     # Number of ensemble members is set to the number of MPI processes
@@ -76,7 +118,7 @@ def main(cfg, args):
             print(*msg)
         sys.stdout.flush()
         comm.Barrier()
-    
+
     ctx = wu.initialize_workflow(
         cfg,
         args,
@@ -142,25 +184,34 @@ def main(cfg, args):
         comm.Barrier()
         sys.exit()
 
+    # Compute un-regularized eigenvalues
+    evals, evecs = np.linalg.eigh(H)
+    mpi_print(f"Min un-regularized eigenvalue:", np.min(evals))
+
     # Regularization
     mpi_print(f"Regularization factor: {ctx.cfg.vi.hess_reg}")
     H = H + ctx.cfg.vi.hess_reg * np.eye(H.shape[0])
 
-    # Compute eigenvalues 
+    # Compute regularized eigenvalues
     evals, evecs = np.linalg.eigh(H)
     idx = np.argsort(evals)[::-1]
     evals, evecs = evals[idx], evecs[:, idx]
 
     if args.plot:
         if rank == 0:
-            plt.plot(evals)
-            plt.xlabel("Eigenvalue index")
-            plt.ylabel("Eigenvalue amplitude")
-            plt.axhline(0.0, color="k")
-            plt.show()
 
-            print(evecs.shape)
-            #plt.plot(evecs
+            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(7, 5.5), layout='constrained')
+            ax1.plot(evals)
+            ax2.semilogy(evals)
+            ax2.set_xlabel("Eigenvalue index")
+            ax1.set_ylim(-5, 20)
+            ax1.axhline(0.0, color="k")
+
+            if args.p_path is not None:
+                fig.savefig(args.p_path, dpi=200, bbox_inches="tight")
+            else:
+                plt.show()
+
         comm.Barrier()
         sys.exit()
 
@@ -176,7 +227,7 @@ def main(cfg, args):
     procN = k1 - k0
 
     mpi_print(f"Updating {ctx.outfile}")
-        
+
     with h5py.File(ctx.outfile, "a", driver="mpio", comm=comm) as fid:
 
         root_group = fid[f"{restore_stage}"]
@@ -299,10 +350,10 @@ def compute_hessian(objective, θ_map, comm, rank, method="ad"):
     for i in range(rank, Np, size):
         e_i = np.zeros(Np)
         e_i[i] = 1.0
-        
+
         # Compute only the row assigned to this rank
         H_local[i, :] = hvp_fn(e_i)
-        
+
         # Optional: Print progress (only Rank 0 reports its own progress to avoid spam)
         if rank == 0 and i % 5 == 0:
              _print(f"{i:3d}/{Np} (Rank 0 progress)")
@@ -318,15 +369,10 @@ def compute_hessian(objective, θ_map, comm, rank, method="ad"):
 
     return H_global
 
- 
+
 if __name__ == "__main__":
     args, extra_args = parse()
-    cfg = cu.load_config(
-        args.cfg,
-        extra_args=extra_args,
-        cal=getattr(args, "cal", False),
-        disc=getattr(args, "disc", False),
-    )
+    cfg = load_runtime_config(args, extra_args)
     main(cfg, args)
 
 # end of file
