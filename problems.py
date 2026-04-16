@@ -4,14 +4,12 @@ from functools import partial
 import numpy as np
 import h5py
 import os
-from typing import Optional, Tuple
+from typing import Optional
 
 import firedrake
 from firedrake import assemble
 import icepack
 import rasterio
-
-from cryogen import interpolate
 
 from . import models
 from .fields import (
@@ -19,7 +17,11 @@ from .fields import (
     periodic_bspline_design_matrix,
     resolve_boundary_basis_config,
 )
-from .utilities import coordinate_values
+from .interpolation import (
+    function_space_coordinates,
+    interpolate_grid_to_function,
+    interpolate_grid_to_mesh_array,
+)
 
 
 def make_mesh(meshfile=None, comm=None, mesh_span=None, mesh_spacing=None):
@@ -65,13 +67,14 @@ class IceShelfProblem:
         self.mesh = mesh
         self.Q = firedrake.FunctionSpace(self.mesh, family="CG", degree=degree)
         self.R = firedrake.FunctionSpace(self.mesh, family="R", degree=0)
-        self.coords = coordinate_values(self.Q)
+        self.coords = function_space_coordinates(self.Q)
         self.N_pts = self.coords.shape[0]
-        if self.coords.ndim == 2:
+        geom_dim = self.coords.shape[1] if self.coords.ndim == 2 else 1
+        if geom_dim > 1:
             self.V = firedrake.VectorFunctionSpace(
                 self.mesh, family="CG", degree=degree
             )
-            self.udim = 2
+            self.udim = geom_dim
         else:
             self.V = firedrake.FunctionSpace(self.mesh, family="CG", degree=degree)
             self.udim = 1
@@ -164,28 +167,7 @@ class IceShelfProblem:
         raise ValueError("Cannot set controls.")
 
     def grid_to_mesh_array(self, grid, grid_coords):
-
-        mesh_coords = (self.coords[:, 0], self.coords[:, 1])
-
-        def _interp_to_mesh(
-            array: np.ndarray, grid_coords: Tuple[np.ndarray, np.ndarray],
-        ) -> np.ndarray:
-            """Simple interpolation of ``array`` onto the mesh coordinates."""
-            return interpolate.interp(array, grid_coords, mesh_coords)
-
-        if grid.ndim == 3:
-            interpolated = np.column_stack(
-                [
-                    _interp_to_mesh(grid[i], grid_coords)
-                    for i in range(grid.shape[0])
-                ]
-            )
-        elif grid.ndim == 2:
-            interpolated = _interp_to_mesh(grid, grid_coords)
-        else:
-            raise ValueError('Grid has unsupported shape.')
-
-        return interpolated
+        return interpolate_grid_to_mesh_array(grid, grid_coords, self.coords)
 
     def load_observations(self, data_file, time_ind: Optional[list] = None):
         """Load observation fields defined on a structured grid.
@@ -225,8 +207,18 @@ class IceShelfProblem:
                 self.C_temporal = fid["C_temporal"][()]
 
         # Time-invariant fields
-        self.h.dat.data[:] = self.grid_to_mesh_array(h, grid_coords)
-        self.log_e_ref.dat.data[:] = self.grid_to_mesh_array(np.log(e_ref), grid_coords)
+        interpolate_grid_to_function(
+            h,
+            grid_coords,
+            function=self.h,
+            mesh_coords=self.coords,
+        )
+        interpolate_grid_to_function(
+            np.log(e_ref),
+            grid_coords,
+            function=self.log_e_ref,
+            mesh_coords=self.coords,
+        )
         self.e_ref_grid = e_ref
 
         # Interpolate the time epoch data
@@ -240,7 +232,12 @@ class IceShelfProblem:
             #e_yy_k = firedrake.Function(self.Q)
 
             # Interpolate velocity components and errors
-            u_k.dat.data[:] = self.grid_to_mesh_array(u[k], grid_coords)
+            interpolate_grid_to_function(
+                u[k],
+                grid_coords,
+                function=u_k,
+                mesh_coords=self.coords,
+            )
             σ_k.dat.data[:] = self.σ_u_default
             #_interp_field(u_sigma[k], grid_coords, σ_k)
 

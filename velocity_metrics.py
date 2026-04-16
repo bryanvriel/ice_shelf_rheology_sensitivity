@@ -8,12 +8,11 @@ import h5py
 import numpy as np
 
 import firedrake
-from cryogen import interpolate
 
 from . import config_utilities as cu
 from . import file_utilities as fu
+from .interpolation import function_space_coordinates, interpolate_grid_to_mesh_array
 from .problems import make_mesh
-from .utilities import coordinate_values
 
 
 _PREDICTION_KEY_PATTERN = re.compile(r"^u(\d+)$")
@@ -67,24 +66,6 @@ def _normalize_dirichlet_ids(
     if np.isscalar(dirichlet_ids):
         return [int(dirichlet_ids)]
     return [int(idx) for idx in dirichlet_ids]
-
-
-def _grid_to_mesh_array(
-    grid: np.ndarray,
-    grid_coords: tuple[np.ndarray, np.ndarray],
-    mesh_coords: tuple[np.ndarray, np.ndarray],
-) -> np.ndarray:
-    grid = np.asarray(grid)
-    if grid.ndim == 3:
-        return np.column_stack(
-            [
-                interpolate.interp(grid[i], grid_coords, mesh_coords)
-                for i in range(grid.shape[0])
-            ]
-        )
-    if grid.ndim == 2:
-        return interpolate.interp(grid, grid_coords, mesh_coords)
-    raise ValueError(f"Unsupported grid shape {grid.shape}. Expected 2-D or 3-D.")
 
 
 def _load_prediction_grids(
@@ -163,64 +144,6 @@ def _zero_dirichlet_value(V):
     raise ValueError(f"Unsupported function-space value shape {value_shape}.")
 
 
-def _affine_scalar_dof_coordinates(Q) -> np.ndarray:
-    mesh = Q.mesh()
-    cell_name = mesh.ufl_cell().cellname()
-    reference_points = np.asarray(Q.finat_element.dual_basis[1].points, dtype=float)
-    cell_nodes = np.asarray(Q.cell_node_map().values, dtype=int)
-
-    coord_fn = mesh.coordinates
-    coord_cell_nodes = np.asarray(
-        coord_fn.function_space().cell_node_map().values,
-        dtype=int,
-    )
-    coord_values = np.asarray(coord_fn.dat.data_ro, dtype=float)
-
-    out = np.full((Q.dim(), coord_values.shape[1]), np.nan, dtype=float)
-    filled = np.zeros(Q.dim(), dtype=bool)
-
-    for cell_idx, dofs in enumerate(cell_nodes):
-        geom_nodes = coord_values[coord_cell_nodes[cell_idx]]
-        if cell_name == "triangle":
-            v0, v1, v2 = geom_nodes
-            phys = (
-                v0
-                + reference_points[:, 0, None] * (v1 - v0)
-                + reference_points[:, 1, None] * (v2 - v0)
-            )
-        elif cell_name == "interval":
-            v0, v1 = geom_nodes
-            phys = v0 + reference_points[:, 0, None] * (v1 - v0)
-        else:
-            raise NotImplementedError(
-                f"Affine dof-coordinate extraction does not support `{cell_name}` cells."
-            )
-
-        for local_dof, global_dof in enumerate(dofs):
-            point = phys[local_dof]
-            if not filled[global_dof]:
-                out[global_dof] = point
-                filled[global_dof] = True
-            elif not np.allclose(out[global_dof], point, atol=1e-12, rtol=1e-12):
-                raise ValueError(
-                    "Inconsistent dof coordinates encountered while assembling the "
-                    "global node list."
-                )
-
-    if not np.all(filled):
-        missing = np.flatnonzero(~filled)
-        raise ValueError(f"Failed to recover coordinates for dofs {missing.tolist()}.")
-
-    return out
-
-
-def _function_space_coordinates(Q) -> np.ndarray:
-    try:
-        return _affine_scalar_dof_coordinates(Q)
-    except NotImplementedError:
-        return coordinate_values(Q)
-
-
 def _build_node_mask(
     *,
     mesh=None,
@@ -236,7 +159,7 @@ def _build_node_mask(
 
     Q = firedrake.FunctionSpace(mesh, family="CG", degree=mesh_degree)
     V = firedrake.VectorFunctionSpace(mesh, family="CG", degree=mesh_degree)
-    coords = _function_space_coordinates(Q)
+    coords = function_space_coordinates(Q)
 
     if coords.ndim != 2 or coords.shape[1] != 2:
         raise ValueError(
@@ -541,8 +464,6 @@ class VelocityErrorMetricsEvaluator:
             mesh_degree=self.mesh_degree,
             exclude_boundary=self.exclude_boundary,
         )
-        self.mesh_coords = (self.coords[:, 0], self.coords[:, 1])
-
     @property
     def n_nodes(self) -> int:
         return int(self.coords.shape[0])
@@ -613,17 +534,17 @@ class VelocityErrorMetricsEvaluator:
         obs_epochs = []
         for local_epoch in range(pred_grids.shape[0]):
             pred_epochs.append(
-                _grid_to_mesh_array(
+                interpolate_grid_to_mesh_array(
                     pred_grids[local_epoch],
                     pred_grid_coords,
-                    self.mesh_coords,
+                    self.coords,
                 )
             )
             obs_epochs.append(
-                _grid_to_mesh_array(
+                interpolate_grid_to_mesh_array(
                     obs_grids[local_epoch],
                     obs_grid_coords,
-                    self.mesh_coords,
+                    self.coords,
                 )
             )
 
