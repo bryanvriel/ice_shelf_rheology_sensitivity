@@ -17,12 +17,13 @@ from jbao.utils import DictToStruct
 from typing import Any, Dict, Tuple
 
 
-def common_parse() -> argparse.ArgumentParser:
+def common_parse(include_cfg: bool = True) -> argparse.ArgumentParser:
     """
     Command line arguments that are common to many of the scripts.
     """
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("cfg", type=str, help="Input configuration file.")
+    if include_cfg:
+        parser.add_argument("cfg", type=str, help="Input configuration file.")
     parser.add_argument(
         "--amp",
         action="store",

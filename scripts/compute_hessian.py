@@ -16,20 +16,27 @@ from mpi4py import MPI
 
 
 def parse():
+    argv = sys.argv[1:]
+    cfg_arg = None
+    if argv and not argv[0].startswith("-"):
+        cfg_arg = argv[0]
+        argv = argv[1:]
+
     parser = argparse.ArgumentParser(
         description="Run joint inversion.",
-        parents=[fu.common_parse()],
+        parents=[fu.common_parse(include_cfg=False)],
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    for action in parser._actions:
-        if action.dest == "cfg":
-            action.nargs = "?"
-            action.default = None
-            action.help = (
-                "Input configuration file. If omitted, load the saved config "
-                "from the MAP results file passed with --output."
-            )
-            break
+    parser.add_argument(
+        "--cfg",
+        action="store",
+        type=str,
+        default=None,
+        help=(
+            "Input configuration file. If omitted, load the saved config "
+            "from the MAP results file passed with --output."
+        ),
+    )
 
     parser.add_argument(
         "-rh",
@@ -76,13 +83,26 @@ def parse():
         help="Number of samples to generate. Default: 200.",
     )
 
-    return parser.parse_known_args()
+    args, extra_args = parser.parse_known_args(argv)
+    if args.cfg is not None and cfg_arg is not None:
+        parser.error("Pass the config at most once, either positionally or via --cfg.")
+    if args.cfg is None:
+        args.cfg = cfg_arg
+    return args, extra_args
 
 
 def load_runtime_config(args, extra_args):
-    if args.cfg is not None:
+    cfg_arg = getattr(args, "cfg", None)
+    if cfg_arg is False:
+        cfg_arg = None
+    elif isinstance(cfg_arg, str):
+        cfg_arg = cfg_arg.strip()
+        if cfg_arg == "":
+            cfg_arg = None
+
+    if cfg_arg is not None:
         return cu.load_config(
-            args.cfg,
+            cfg_arg,
             extra_args=extra_args,
             cal=getattr(args, "cal", False),
             disc=getattr(args, "disc", False),
@@ -96,12 +116,20 @@ def load_runtime_config(args, extra_args):
             "results file."
         )
 
-    return fu.load_cfg_from_results_file(
+    cfg = fu.load_cfg_from_results_file(
         results_file,
         stage=args.restore_stage,
-        validate=True,
-        require_vi=True,
+        validate=False,
+        require_vi=False,
     )
+    if extra_args:
+        cfg = cu.update_cfg_with_extra(cfg, extra_args)
+    cfg = cu.apply_calibration_overrides(
+        cfg,
+        cal=getattr(args, "cal", False),
+        disc=getattr(args, "disc", False),
+    )
+    return cu.validate_cfg(cfg, require_vi=True)
 
 
 def main(cfg, args):
