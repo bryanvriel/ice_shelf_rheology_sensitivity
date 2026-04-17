@@ -147,6 +147,16 @@ def main(cfg, args):
         sys.stdout.flush()
         comm.Barrier()
 
+    def root_h5_write(outfile, update):
+        # Serialize rank-0 writes so they never overlap with other ranks'
+        # independent HDF5 reads on the same file.
+        comm.Barrier()
+        if rank == 0:
+            with h5py.File(outfile, "a") as fid:
+                update(fid)
+                fid.flush()
+        comm.Barrier()
+
     ctx = wu.initialize_workflow(
         cfg,
         args,
@@ -183,9 +193,7 @@ def main(cfg, args):
                 del group[key]
             group[key] = value
 
-    if rank == 0:
-        with h5py.File(ctx.outfile, "a") as fid:
-            _write_metadata(fid[f"{restore_stage}"], metadata)
+    root_h5_write(ctx.outfile, lambda fid: _write_metadata(fid[f"{restore_stage}"], metadata))
 
     # Gradient test
     _, grad = ctx.objective(θ_map)
@@ -201,12 +209,14 @@ def main(cfg, args):
             H = group[hessian_group][()]
     else:
         H = compute_hessian(ctx.objective, θ_map, comm, rank)
-        if rank == 0:
-            with h5py.File(ctx.outfile, "a") as fid:
-                group = fid[f"{restore_stage}"]
-                if hessian_group in group.keys():
-                    del group[hessian_group]
-                group[hessian_group] = H
+
+        def _write_hessian(fid):
+            group = fid[f"{restore_stage}"]
+            if hessian_group in group.keys():
+                del group[hessian_group]
+            group[hessian_group] = H
+
+        root_h5_write(ctx.outfile, _write_hessian)
 
     if args.compute_only:
         comm.Barrier()
