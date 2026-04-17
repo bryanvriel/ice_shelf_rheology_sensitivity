@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 
@@ -30,6 +31,15 @@ Params = Dict[str, Array]  # {"mean": (n,), "raw_tril": (n*(n+1)//2,)}
 Grads = Dict[str, Array]
 
 
+@dataclass(frozen=True)
+class QuadraticControlVariate:
+    ref_theta: Array
+    ref_loglik: Array
+    ref_grad_loglik: Array
+    neg_loglik_hessian: Array
+    source: str
+
+
 class SVIFullRankGaussian:
     """
     Stateless SVI helper for a full-rank Gaussian variational family.
@@ -58,6 +68,7 @@ class SVIFullRankGaussian:
         diag_shift: float = 1e-5,
         beta_kl: float = 1.0,
         comm=None,
+        control_variate: Optional[QuadraticControlVariate] = None,
     ):
         self.loglik_fn = loglik_fn
         self.prior_mean = jnp.asarray(prior_mean, dtype=dtype)
@@ -67,6 +78,21 @@ class SVIFullRankGaussian:
         self.dtype = dtype
         self.n_dim = prior_mean.size
         self.β_kl = beta_kl
+        self.control_variate = None
+        if control_variate is not None:
+            self.control_variate = QuadraticControlVariate(
+                ref_theta=jnp.asarray(control_variate.ref_theta, dtype=dtype),
+                ref_loglik=jnp.asarray(control_variate.ref_loglik, dtype=dtype),
+                ref_grad_loglik=jnp.asarray(
+                    control_variate.ref_grad_loglik,
+                    dtype=dtype,
+                ),
+                neg_loglik_hessian=jnp.asarray(
+                    control_variate.neg_loglik_hessian,
+                    dtype=dtype,
+                ),
+                source=str(control_variate.source),
+            )
 
         # Bijector mapping unconstrained vector -> lower-triangular scale
         # with positive diag
@@ -204,6 +230,47 @@ class SVIFullRankGaussian:
         eps = self.sample_eps(key, n, antithetic)
         return self.sample_reparam(params, eps)
 
+    def _sample_reparam_vjp(self, params: Params, eps: Array, cotangent: Array) -> Grads:
+        _, vjpfun = jax.vjp(
+            lambda p: self.sample_reparam(p, eps),
+            params,
+        )
+        return vjpfun(jnp.asarray(cotangent, dtype=self.dtype))[0]
+
+    def _quadratic_cv(self) -> QuadraticControlVariate:
+        if self.control_variate is None:
+            raise ValueError("Quadratic control variate is not configured.")
+        return self.control_variate
+
+    def _quadratic_cv_value(self, theta: Array) -> Array:
+        cv = self._quadratic_cv()
+        delta = jnp.asarray(theta, dtype=self.dtype) - cv.ref_theta
+        quad = delta @ (cv.neg_loglik_hessian @ delta)
+        return cv.ref_loglik + cv.ref_grad_loglik @ delta - 0.5 * quad
+
+    def _quadratic_cv_grad_theta(self, theta: Array) -> Array:
+        cv = self._quadratic_cv()
+        delta = jnp.asarray(theta, dtype=self.dtype) - cv.ref_theta
+        return cv.ref_grad_loglik - cv.neg_loglik_hessian @ delta
+
+    def _quadratic_cv_expectation(self, params: Params) -> Array:
+        cv = self._quadratic_cv()
+        m = params["mean"].astype(self.dtype)
+        L = self.scale_tril(params)
+        Sigma = L @ L.T
+        delta = m - cv.ref_theta
+        quad = delta @ (cv.neg_loglik_hessian @ delta)
+        trace_term = jnp.sum(cv.neg_loglik_hessian * Sigma)
+        return cv.ref_loglik + cv.ref_grad_loglik @ delta - 0.5 * (
+            quad + trace_term
+        )
+
+    def _quadratic_cv_expectation_value_and_grad(
+        self,
+        params: Params,
+    ) -> Tuple[Array, Grads]:
+        return jax.value_and_grad(self._quadratic_cv_expectation)(params)
+
     def kl_fullrank_prior(
         self,
         params: Params,
@@ -257,7 +324,12 @@ class SVIFullRankGaussian:
         # Compute ELBO
         elbo = logP - kl
         neg_elbo = -elbo
-        metrics = dict(elbo=elbo, logP=logP, kl=kl)
+        metrics = dict(
+            elbo=elbo,
+            logP=logP,
+            kl=kl,
+            cv_active=jnp.asarray(0, dtype=jnp.int32),
+        )
         return neg_elbo, metrics
 
     def elbo_loss_mpi(
@@ -297,17 +369,41 @@ class SVIFullRankGaussian:
         valid_mask = np.isfinite(self.logP)
         num_valid_mc = np.sum(valid_mask)
 
-        # Compute log likelihood values over Monte Carlo samples
-        logP = jnp.mean(self.logP[valid_mask])
-        grad_logP = self.grad_logP.reshape(-1, self.n_dim)[valid_mask]
-        eps = eps[valid_mask]
-
-        # vjp to get gradient of logP w.r.t. variational parameters
-        _, vjpfun = jax.vjp(
-            lambda p: self.sample_reparam(p, eps),
-            params,
+        valid_logP = jnp.asarray(self.logP[valid_mask], dtype=self.dtype)
+        valid_grad_logP = jnp.asarray(
+            self.grad_logP.reshape(-1, self.n_dim)[valid_mask],
+            dtype=self.dtype,
         )
-        grad_logP = vjpfun(grad_logP)[0]
+        valid_eps = jnp.asarray(np.asarray(eps)[valid_mask], dtype=self.dtype)
+
+        cv_active = jnp.asarray(0, dtype=jnp.int32)
+        if self.control_variate is not None and num_valid_mc == self.num_mc:
+            valid_thetas = self.sample_reparam(params, valid_eps)
+            cv_vals = jax.vmap(self._quadratic_cv_value)(valid_thetas)
+            cv_grad_theta = jax.vmap(self._quadratic_cv_grad_theta)(valid_thetas)
+            cv_expect, grad_cv_expect = self._quadratic_cv_expectation_value_and_grad(
+                params
+            )
+
+            residual_grad = self._sample_reparam_vjp(
+                params,
+                valid_eps,
+                valid_grad_logP - cv_grad_theta,
+            )
+            grad_logP = jax.tree_util.tree_map(
+                lambda residual, analytic: analytic + residual / num_valid_mc,
+                residual_grad,
+                grad_cv_expect,
+            )
+            logP = cv_expect + jnp.mean(valid_logP - cv_vals)
+            cv_active = jnp.asarray(1, dtype=jnp.int32)
+        else:
+            logP = jnp.mean(valid_logP)
+            grad_logP = self._sample_reparam_vjp(params, valid_eps, valid_grad_logP)
+            grad_logP = jax.tree_util.tree_map(
+                lambda g: g / num_valid_mc,
+                grad_logP,
+            )
 
         # Compute KL-divergence (deterministic)
         kl, grad_kl = jax.value_and_grad(lambda p: self.kl_fullrank_prior(p))(params)
@@ -315,7 +411,7 @@ class SVIFullRankGaussian:
         # Negative ELBO and grad
         loss = -1 * (logP - kl)
         grad_loss = jax.tree_util.tree_map(
-            lambda x, y: -1 * (x / num_valid_mc - y),
+            lambda x, y: -1 * (x - y),
             grad_logP,
             grad_kl,
         )
@@ -323,6 +419,7 @@ class SVIFullRankGaussian:
             elbo=-loss,
             logP=logP,
             kl=kl,
+            cv_active=cv_active,
         )
         return loss, grad_loss, metrics
 
@@ -336,12 +433,16 @@ class SVIFullRankGaussian:
         num_steps: int = 1000,
         jit: bool = False,
         callback: Optional[Callable] = None,
-    ) -> Tuple[Params, optax.OptState, Dict[str, Array]]:
+    ) -> Tuple[Params, optax.OptState, Array, np.ndarray, np.ndarray, np.ndarray]:
         """
         Optimize `params` using an externally provided optimizer & state.
 
-        Returns (updated_params, updated_opt_state, history_dict).
+        Returns (params, opt_state, rng, logP_hist, kl_hist, cv_active_hist).
         """
+        if jit and self.control_variate is not None:
+            raise NotImplementedError(
+                "quadratic control variate is only implemented for the MPI/non-jit path"
+            )
 
         if jit:
 
@@ -368,16 +469,27 @@ class SVIFullRankGaussian:
 
         logP = np.zeros(num_steps)
         kl = np.zeros(num_steps)
+        cv_active = np.zeros(num_steps, dtype=np.int8)
 
         for t in range(num_steps):
             params, opt_state, rng, loss, metrics = step(params, opt_state, rng)
 
-            if self.mpi_rank == 0 and callback is not None:
+            if self.mpi_rank == 0:
                 logP[t] = metrics["logP"]
                 kl[t] = metrics["kl"]
-                callback(t, logP[: t + 1], kl[: t + 1], params, opt_state, rng)
+                cv_active[t] = int(np.asarray(metrics.get("cv_active", 0)))
+                if callback is not None:
+                    callback(
+                        t,
+                        logP[: t + 1],
+                        kl[: t + 1],
+                        cv_active[: t + 1],
+                        params,
+                        opt_state,
+                        rng,
+                    )
 
-        return params, opt_state, rng, logP, kl
+        return params, opt_state, rng, logP, kl, cv_active
 
 
 # ---------- Natural Gradient Descent transformation --------

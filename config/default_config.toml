@@ -93,6 +93,7 @@ boundary_corr_length = 4000.0
 num_mc = 0
 lr = 8e-4
 lr_hyper = 2e-4
+control_variate = "none"
 
 # Initial posterior scale defaults
 sigma_B_min = 0.7
