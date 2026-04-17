@@ -3,11 +3,11 @@
 import numpy as np
 from scipy.interpolate import BSpline
 from scipy.linalg import block_diag, solve_triangular
-from scipy.special import erf
 import h5py
 
 import jax
 import jax.numpy as jnp
+from jax import lax
 import equinox as eqx
 import cryogen
 
@@ -18,34 +18,39 @@ from .file_utilities import make_matrix_filename
 def _inv_norm_tanh(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
     A = 0.5 * (high - low)
     C0 = 0.5 * (high + low)
-    return A * np.tanh(θ / tau) + C0
+    θ = jnp.asarray(θ)
+    return A * jnp.tanh(θ / tau) + C0
 
 
 def _inv_norm_arctan(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
+    θ = jnp.asarray(θ)
     m = 0.5 * (low + high)
     r = 0.5 * (high - low)
-    s = 2 / np.pi * r
-    return m + s * np.arctan(θ / tau)
+    s = 2 / jnp.pi * r
+    return m + s * jnp.arctan(θ / tau)
 
 
 def _inv_norm_cdf(θ, low=0.1, high=5.0, tau=1.0, **kwargs):
-    u = 0.5 * (1.0 + erf(θ / (tau * np.sqrt(2.0))))
+    θ = jnp.asarray(θ)
+    u = 0.5 * (1.0 + lax.erf(θ / (tau * jnp.sqrt(2.0))))
     return low + (high - low) * u
 
 
 def _inv_norm_log(θ, C0=1.0, **kwargs):
-    return C0 * np.exp(θ)
+    θ = jnp.asarray(θ)
+    return C0 * jnp.exp(θ)
 
 
 def _inv_norm_softplus(θ, low=0.1, high=5.0, tau=2, **kwargs):
+    θ = jnp.asarray(θ)
     loc = 0.5 * (high + low)
     scale = (high - low) / (2 * tau)
 
-    delta = np.log(np.expm1(loc))
-    slope = 1.0 - np.exp(-loc)
+    delta = jnp.log(jnp.expm1(loc))
+    slope = 1.0 - jnp.exp(-loc)
     latent_scale = scale / slope
 
-    return np.logaddexp(0.0, latent_scale * θ + delta)
+    return jnp.logaddexp(0.0, latent_scale * θ + delta)
 
 
 _INV_NORM_MAPPING = {
@@ -60,7 +65,7 @@ _INV_NORM_MAPPING = {
 
 def inv_norm(θ, opts, norm_type):
     """
-    Compute inverse normalization with NumPy/SciPy only.
+    Compute inverse normalization with JAX arrays.
 
     This mirrors the normalization choices used by the Firedrake-facing model
     code so light-weight scripts can unnormalize arrays without importing
@@ -69,8 +74,8 @@ def inv_norm(θ, opts, norm_type):
     if norm_type not in _INV_NORM_MAPPING:
         raise ValueError(f"Unsupported norm type: {norm_type}")
     opts = {} if opts is None else dict(opts)
-    θ = np.asarray(θ, dtype=float)
-    return np.asarray(_INV_NORM_MAPPING[norm_type](θ, **opts))
+    θ = jnp.asarray(θ)
+    return _INV_NORM_MAPPING[norm_type](θ, **opts)
 
 
 def make_spd(
