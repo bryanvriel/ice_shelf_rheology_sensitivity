@@ -189,19 +189,21 @@ def main(cfg, args):
         jit=False,
         callback=callback,
     )
-    save_params(
-        ctx.outfile,
-        params,
-        extra={
-            "logP": logP,
-            "kl": kl,
-            "opt_state": opt_state,
-            "key": loop_key,
-            "metadata": metadata,
-            "mapfile": mapfile,
-            "map_restore_group": map_restore_group,
-        },
-    )
+    if comm.rank == 0:
+        # Only rank 0 owns the populated histories and updated optimizer state.
+        save_params(
+            ctx.outfile,
+            params,
+            extra={
+                "logP": logP,
+                "kl": kl,
+                "opt_state": opt_state,
+                "key": loop_key,
+                "metadata": metadata,
+                "mapfile": mapfile,
+                "map_restore_group": map_restore_group,
+            },
+        )
 
 
 if __name__ == "__main__":
