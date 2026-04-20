@@ -7,7 +7,7 @@ import numpy as np
 import jax
 from jax import numpy as jnp
 from jax import random, value_and_grad
-from jax.scipy.linalg import solve_triangular, cho_solve
+from jax.scipy.linalg import cho_solve
 import optax
 
 from tensorflow_probability.substrates import jax as tfp
@@ -490,79 +490,5 @@ class SVIFullRankGaussian:
                     )
 
         return params, opt_state, rng, logP, kl, cv_active
-
-
-# ---------- Natural Gradient Descent transformation --------
-
-
-def make_natgrad_transform_for_svi(
-    *,
-    bijector: tfb.Bijector,
-    dtype=jnp.float64,
-    cov_damping: float = 0.0,  # optional: Σ ← Σ + λI inside preconditioner
-    project_lower: bool = True,  # keep lower-tri tangents for stability
-) -> optax.GradientTransformation:
-    """
-    Natural-gradient preconditioner for q(θ)=N(m, Σ), params:
-      params["mean"]     : (d,)
-      params["raw_tril"] : (d*(d+1)//2,)
-    with L = bijector.forward(raw_tril), Σ = L L^T.
-
-    Returns an Optax GradientTransformation that maps Euclidean grads
-    to natural-gradient directions in the SAME PyTree (mean, raw_tril).
-    Place FIRST in optax.chain(...).
-    """
-
-    def init_fn(params: Params):
-        return optax.EmptyState()
-
-    def update_fn(grads: Grads, state, params: Params):
-        # Unpack & reconstruct
-        m = params["mean"].astype(dtype)
-        raw = params["raw_tril"].astype(dtype)
-        L = bijector.forward(raw).astype(dtype)  # (d,d), lower-tri
-        Sigma = L @ L.T
-        if cov_damping > 0.0:
-            Sigma = Sigma + cov_damping * jnp.eye(Sigma.shape[0], dtype=dtype)
-
-        # --- Mean block: nat-grad(m) = Σ * grad(m) ---
-        g_m = grads["mean"].astype(dtype)
-        nat_g_m = Sigma @ g_m
-
-        # --- Covariance block ---
-        # Map grad wrt raw_tril  -> grad wrt L  using VJP of inverse (raw = inv(L))
-        inv = lambda L_: bijector.inverse(L_)
-        _, pullback_inv = jax.vjp(inv, L)
-        g_raw = grads["raw_tril"].astype(dtype)
-        (g_L,) = pullback_inv(g_raw)  # (d,d)
-        if project_lower:
-            g_L = jnp.tril(g_L)
-
-        # Convert g_L -> G_Sigma = 0.5 * g_L * L^{-1}   (optionally symmetrize)
-        # Compute Y = g_L * L^{-1} via RIGHT triangular solve:  Y^T solves L^T Y^T = g_L^T
-        Yt = solve_triangular(L.T, g_L.T, lower=False)  # Yt = L^{-T} g_L^T
-        Y = Yt.T  # Y = g_L L^{-1}
-        G_Sigma = 0.5 * Y
-        # Be safe numerically:
-        G_Sigma = 0.5 * (G_Sigma + G_Sigma.T)
-
-        # Natural direction in Σ: ΔΣ = 2 Σ GΣ Σ
-        Delta_Sigma = 2.0 * (Sigma @ (G_Sigma @ Sigma))
-
-        # Map ΔΣ -> δL with δL = 0.5 ΔΣ L^{-T}  (exactly yields dΣ = ΔΣ)
-        tmp = solve_triangular(L, Delta_Sigma.T, lower=True)  # tmp = L^{-1} ΔΣ^T
-        dL = 0.5 * tmp.T  # δL = 0.5 ΔΣ L^{-T}
-        if project_lower:
-            dL = jnp.tril(dL)
-
-        # Push δL -> δraw  using JVP of inverse bijector
-        _, d_raw = jax.jvp(inv, (L,), (dL,))
-        nat_g_raw = d_raw
-
-        updates = {"mean": nat_g_m, "raw_tril": nat_g_raw}
-        return updates, state
-
-    return optax.GradientTransformation(init_fn, update_fn)
-
 
 # end of file
