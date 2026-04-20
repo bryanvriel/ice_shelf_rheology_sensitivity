@@ -269,23 +269,24 @@ def main(cfg, args):
         jit=False,
         callback=callback,
     )
-    save_params(
-        ctx.outfile,
-        params,
-        extra={
-            "logP": logP,
-            "kl": kl,
-            "cv_active": cv_active,
-            "opt_state": opt_state,
-            "key": loop_key,
-            "metadata": metadata,
-            "mapfile": mapfile,
-            "map_restore_group": map_restore_group,
-            "control_variate_mode": control_variate_mode,
-            "control_variate_source": control_variate_source,
-            "control_variate_enabled": np.int8(control_variate_enabled),
-        },
-    )
+    if rank == 0:
+        save_params(
+            ctx.outfile,
+            params,
+            extra={
+                "logP": logP,
+                "kl": kl,
+                "cv_active": cv_active,
+                "opt_state": opt_state,
+                "key": loop_key,
+                "metadata": metadata,
+                "mapfile": mapfile,
+                "map_restore_group": map_restore_group,
+                "control_variate_mode": control_variate_mode,
+                "control_variate_source": control_variate_source,
+                "control_variate_enabled": np.int8(control_variate_enabled),
+            },
+        )
 
 
 if __name__ == "__main__":
