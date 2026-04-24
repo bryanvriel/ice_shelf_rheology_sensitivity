@@ -206,7 +206,7 @@ This is especially relevant when one field is of direct scientific interest and 
 
 These modules collect lightweight checks for uncertainty and residual structure:
 
-- `diagnostics.py` propagates coefficient covariance into physical uncertainty for the rheology exponent field
+- `diagnostics.py` propagates coefficient covariance into physical uncertainty for `B` or `n`
 - `diagnostics.py` computes a local stress-variability metric weighted by strain-rate leverage
 - `stats.py` provides residual correlation diagnostics and posterior calibration summaries
 

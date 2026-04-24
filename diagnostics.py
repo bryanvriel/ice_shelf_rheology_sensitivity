@@ -51,19 +51,46 @@ class IceRheologyStatistics:
         else:
             self.Cp_precision_diag = 1.0 / np.array(Cp_std)**2
 
-    def compute_crlb_n(self, m_n_coeffs, transform_func, transform_args=(), H=None):
+    def compute_crlb(self, m_coeffs, transform_func, transform_args=(), H=None, block="n"):
         """
-        Computes CRLB using JAX to autodiff the transform function.
+        Computes CRLB for a parameter block using JAX to autodiff the transform.
         
         Args:
-            m_n_coeffs (np.array): The MAP wavelet coefficients for 'n'.
+            m_coeffs (np.array): The MAP wavelet coefficients for the selected block.
             transform_func (callable): A function `f(latent_field, *args)` written 
                                        using jax.numpy operations.
             transform_args (tuple): Extra arguments for the transform (bounds, shifts, etc).
+            H (np.array): Optional full posterior Hessian for the combined [B, n] system.
+            block (str): Parameter block to project, either "B" or "n".
             
         Returns:
-            sigma_n (np.array): Physical uncertainty field.
+            sigma_field (np.array): Physical uncertainty field for the selected block.
         """
+        block_starts = {
+            "B": 0,
+            "n": self.J_B_flat.shape[1],
+        }
+        block_sizes = {
+            "B": self.J_B_flat.shape[1],
+            "n": self.J_n_flat.shape[1],
+        }
+        if block not in block_starts:
+            raise ValueError(f"block must be 'B' or 'n', got {block!r}")
+
+        block_start = block_starts[block]
+        block_stop = block_start + block_sizes[block]
+        m_coeffs = np.asarray(m_coeffs)
+        if m_coeffs.shape != (block_sizes[block],):
+            raise ValueError(
+                f"m_coeffs for block {block!r} must have shape "
+                f"({block_sizes[block]},), got {m_coeffs.shape}"
+            )
+        if self.W.shape[1] != block_sizes[block]:
+            raise ValueError(
+                f"W has {self.W.shape[1]} columns, but block {block!r} has "
+                f"{block_sizes[block]} coefficients"
+            )
+
         # 1. Hessian Inversion (Standard Step)
         # ---------------------------------------------------------
         if H is None:
@@ -75,17 +102,16 @@ class IceRheologyStatistics:
         c, lower = cho_factor(H, lower=True)
         Sigma_m = cho_solve((c, lower), np.eye(H.shape[0]))
         
-        # Extract block for 'n'
-        n_start = self.J_B_flat.shape[1]
-        Sigma_n_coeffs = Sigma_m[n_start:, n_start:]
+        # Extract the selected parameter block.
+        Sigma_coeffs = Sigma_m[block_start:block_stop, block_start:block_stop]
         
         # 2. JAX Autodiff Step
         # ---------------------------------------------------------
         # Reconstruct latent field z = W @ m
-        latent_z = self.W @ m_n_coeffs
+        latent_z = self.W @ m_coeffs
         
         # Define the scalar derivative function
-        # We assume the transform is element-wise: n_i = f(z_i)
+        # We assume the transform is element-wise: physical_i = f(z_i)
         grad_func = jax.grad(transform_func, argnums=0)
         
         # Vectorize over the latent field while treating transform args as constants.
@@ -103,7 +129,7 @@ class IceRheologyStatistics:
         W_effective = self.W * d_transform[:, np.newaxis]
         
         # Project Variance: diag(W_eff @ Sigma @ W_eff.T)
-        Sigma_W_T = Sigma_n_coeffs @ W_effective.T
+        Sigma_W_T = Sigma_coeffs @ W_effective.T
         variance_n_field = np.sum(W_effective * Sigma_W_T.T, axis=1)
         
         return np.sqrt(variance_n_field)
