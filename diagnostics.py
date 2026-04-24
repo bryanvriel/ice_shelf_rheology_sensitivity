@@ -1,8 +1,4 @@
-
 import numpy as np
-from numpy.linalg import eigh, svd, inv, slogdet
-from typing import Tuple, Dict, Optional
-from dataclasses import dataclass
 from scipy.linalg import cho_factor, cho_solve
 from scipy.spatial import cKDTree
 
@@ -92,11 +88,12 @@ class IceRheologyStatistics:
         # We assume the transform is element-wise: n_i = f(z_i)
         grad_func = jax.grad(transform_func, argnums=0)
         
-        # Vectorize it to apply to the whole array at once
-        vmap_grad_func = jax.vmap(grad_func, in_axes=(0, None, None))
+        # Vectorize over the latent field while treating transform args as constants.
+        vmap_grad_func = jax.vmap(
+            grad_func, in_axes=(0,) + (None,) * len(transform_args)
+        )
         
         # Compute the local derivatives (d_physical / d_latent)
-        # Note: Pass args as a tuple (or unpack if your func expects separate args)
         # We convert to JAX array for computation, then back to NumPy
         d_transform = np.array(vmap_grad_func(jnp.array(latent_z), *transform_args))
         

@@ -204,12 +204,11 @@ This is especially relevant when one field is of direct scientific interest and 
 
 ### `diagnostics.py` and `stats.py`
 
-These modules help answer the question: "How trustworthy is the inversion?"
+These modules collect lightweight checks for uncertainty and residual structure:
 
-- null-space and effective-dimensionality diagnostics
-- prior-dominance checks
-- suggestions for safer hierarchical priors
-- calibration and coverage summaries for posterior samples
+- `diagnostics.py` propagates coefficient covariance into physical uncertainty for the rheology exponent field
+- `diagnostics.py` computes a local stress-variability metric weighted by strain-rate leverage
+- `stats.py` provides residual correlation diagnostics and posterior calibration summaries
 
 ### Supporting utilities
 
