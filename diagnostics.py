@@ -7,51 +7,74 @@ import jax.numpy as jnp
 
 
 class IceRheologyStatistics:
-    def __init__(self, J_B, J_n, W, Cd_std, Cp_std):
+    def __init__(self, J_B=None, J_n=None, W=None, Cd_std=None, Cp_std=None):
         """
         Args:
-            J_B, J_n (np.array): Jacobians with shape (n_epoch, n_obs, n_coeffs).
+            J_B, J_n (np.array, optional): Jacobians with shape
+                                           (n_epoch, n_obs, n_coeffs).
             W (np.array): Wavelet design matrix (N_nodes x N_coeffs).
-            Cd_std (float or np.array): Data noise std dev. 
+            Cd_std (float or np.array, optional): Data noise std dev.
                                         - Scalar: applied to all obs/epochs.
                                         - (n_obs,): applied per epoch (tiled).
                                         - (n_epoch, n_obs): explicit map.
-            Cp_std (float or np.array): Prior std dev.
+            Cp_std (float or np.array, optional): Prior std dev.
         """
-        # 1. Flatten Jacobians: (n_epoch, n_obs, n_coeffs) -> (n_total_obs, n_coeffs)
-        # We merge epochs and observations into the 'rows' of the matrix
+        self.J_B_flat = None
+        self.J_n_flat = None
+        self.W = W
+        self.Cd_inv_weight = None
+        self.Cp_precision_diag = None
+
+        if J_B is None and J_n is None:
+            if Cd_std is not None or Cp_std is not None:
+                raise ValueError("Cd_std and Cp_std require J_B and J_n.")
+            return
+        if J_B is None or J_n is None:
+            raise ValueError("J_B and J_n must be provided together.")
+
         n_epochs, n_obs, n_coeffs_B = J_B.shape
-        _, _, n_coeffs_n = J_n.shape
+        n_epochs_n, n_obs_n, n_coeffs_n = J_n.shape
+        if (n_epochs_n, n_obs_n) != (n_epochs, n_obs):
+            raise ValueError(
+                "J_B and J_n must have the same epoch and observation dimensions."
+            )
         
+        # Flatten Jacobians by merging epochs and observations into matrix rows.
         self.J_B_flat = J_B.reshape(-1, n_coeffs_B)
         self.J_n_flat = J_n.reshape(-1, n_coeffs_n)
-        self.W = W
         
-        # 2. Handle Cd (Noise) - Match the flattened shape (n_epochs * n_obs)
-        if np.isscalar(Cd_std):
-            # Scalar broadcasts implicitly later
-            self.Cd_inv_weight = np.full(self.J_B_flat.shape[0], 1.0/Cd_std)
+        if Cd_std is not None:
+            if np.isscalar(Cd_std):
+                self.Cd_inv_weight = np.full(self.J_B_flat.shape[0], 1.0/Cd_std)
             
-        else:
-            Cd_arr = np.array(Cd_std)
-            if Cd_arr.ndim == 1 and Cd_arr.shape[0] == n_obs:
-                # User provided 1D array for one epoch; tile it for all epochs
-                Cd_expanded = np.tile(Cd_arr, n_epochs)
-                self.Cd_inv_weight = 1.0 / Cd_expanded
-            elif Cd_arr.shape == (n_epochs, n_obs):
-                # User provided explicit noise for every epoch
-                self.Cd_inv_weight = 1.0 / Cd_arr.flatten()
             else:
-                raise ValueError(f"Cd_std shape {Cd_arr.shape} inconsistent with Obs {n_obs} or Epochs {n_epochs}")
+                Cd_arr = np.array(Cd_std)
+                if Cd_arr.ndim == 1 and Cd_arr.shape[0] == n_obs:
+                    Cd_expanded = np.tile(Cd_arr, n_epochs)
+                    self.Cd_inv_weight = 1.0 / Cd_expanded
+                elif Cd_arr.shape == (n_epochs, n_obs):
+                    self.Cd_inv_weight = 1.0 / Cd_arr.flatten()
+                else:
+                    raise ValueError(
+                        f"Cd_std shape {Cd_arr.shape} inconsistent with Obs "
+                        f"{n_obs} or Epochs {n_epochs}"
+                    )
 
-        # 3. Handle Cp (Prior precision diagonal)
-        n_total_coeffs = n_coeffs_B + n_coeffs_n
-        if np.isscalar(Cp_std):
-            self.Cp_precision_diag = np.full(n_total_coeffs, 1.0/Cp_std**2)
-        else:
-            self.Cp_precision_diag = 1.0 / np.array(Cp_std)**2
+        if Cp_std is not None:
+            n_total_coeffs = n_coeffs_B + n_coeffs_n
+            if np.isscalar(Cp_std):
+                self.Cp_precision_diag = np.full(n_total_coeffs, 1.0/Cp_std**2)
+            else:
+                self.Cp_precision_diag = 1.0 / np.array(Cp_std)**2
+                if self.Cp_precision_diag.shape != (n_total_coeffs,):
+                    raise ValueError(
+                        f"Cp_std must be scalar or have shape ({n_total_coeffs},), "
+                        f"got {np.array(Cp_std).shape}"
+                    )
 
-    def compute_crlb(self, m_coeffs, transform_func, transform_args=(), H=None, block="n"):
+    def compute_crlb(
+        self, m_coeffs, transform_func, transform_args=(), H=None, block="n", W=None
+    ):
         """
         Computes CRLB for a parameter block using JAX to autodiff the transform.
         
@@ -62,42 +85,76 @@ class IceRheologyStatistics:
             transform_args (tuple): Extra arguments for the transform (bounds, shifts, etc).
             H (np.array): Optional full posterior Hessian for the combined [B, n] system.
             block (str): Parameter block to project, either "B" or "n".
+            W (np.array): Optional wavelet design matrix overriding the stored matrix.
             
         Returns:
             sigma_field (np.array): Physical uncertainty field for the selected block.
         """
-        block_starts = {
-            "B": 0,
-            "n": self.J_B_flat.shape[1],
-        }
-        block_sizes = {
-            "B": self.J_B_flat.shape[1],
-            "n": self.J_n_flat.shape[1],
-        }
-        if block not in block_starts:
+        if block not in ("B", "n"):
             raise ValueError(f"block must be 'B' or 'n', got {block!r}")
 
-        block_start = block_starts[block]
-        block_stop = block_start + block_sizes[block]
         m_coeffs = np.asarray(m_coeffs)
-        if m_coeffs.shape != (block_sizes[block],):
+        if m_coeffs.ndim != 1:
+            raise ValueError(f"m_coeffs must be one-dimensional, got {m_coeffs.shape}")
+
+        W_matrix = self.W if W is None else W
+        if W_matrix is None:
+            raise ValueError("compute_crlb requires W either in __init__ or as an argument.")
+        W_matrix = np.asarray(W_matrix)
+        if W_matrix.ndim != 2:
+            raise ValueError(f"W must be two-dimensional, got {W_matrix.shape}")
+        if W_matrix.shape[1] != m_coeffs.size:
             raise ValueError(
-                f"m_coeffs for block {block!r} must have shape "
-                f"({block_sizes[block]},), got {m_coeffs.shape}"
-            )
-        if self.W.shape[1] != block_sizes[block]:
-            raise ValueError(
-                f"W has {self.W.shape[1]} columns, but block {block!r} has "
-                f"{block_sizes[block]} coefficients"
+                f"W has {W_matrix.shape[1]} columns, but m_coeffs has "
+                f"{m_coeffs.size} entries"
             )
 
         # 1. Hessian Inversion (Standard Step)
         # ---------------------------------------------------------
         if H is None:
+            missing = []
+            if self.J_B_flat is None or self.J_n_flat is None:
+                missing.append("J_B/J_n")
+            if self.Cd_inv_weight is None:
+                missing.append("Cd_std")
+            if self.Cp_precision_diag is None:
+                missing.append("Cp_std")
+            if missing:
+                raise ValueError(
+                    "H=None requires these values in __init__: "
+                    + ", ".join(missing)
+                )
             J_total = np.hstack([self.J_B_flat, self.J_n_flat])
             J_weighted = J_total * self.Cd_inv_weight[:, np.newaxis]
             H = J_weighted.T @ J_weighted
             np.fill_diagonal(H, np.diag(H) + self.Cp_precision_diag)
+        else:
+            H = np.asarray(H)
+            if H.ndim != 2 or H.shape[0] != H.shape[1]:
+                raise ValueError(f"H must be square, got {H.shape}")
+
+        if self.J_B_flat is not None and self.J_n_flat is not None:
+            block_starts = {"B": 0, "n": self.J_B_flat.shape[1]}
+            block_sizes = {"B": self.J_B_flat.shape[1], "n": self.J_n_flat.shape[1]}
+            if m_coeffs.size != block_sizes[block]:
+                raise ValueError(
+                    f"m_coeffs for block {block!r} must have "
+                    f"{block_sizes[block]} entries, got {m_coeffs.size}"
+                )
+            block_start = block_starts[block]
+            block_stop = block_start + block_sizes[block]
+        elif block == "B":
+            block_start = 0
+            block_stop = m_coeffs.size
+        else:
+            block_start = H.shape[0] - m_coeffs.size
+            block_stop = H.shape[0]
+
+        if not 0 <= block_start < block_stop <= H.shape[0]:
+            raise ValueError(
+                f"Could not infer block {block!r} of size {m_coeffs.size} "
+                f"from H shape {H.shape}"
+            )
         
         c, lower = cho_factor(H, lower=True)
         Sigma_m = cho_solve((c, lower), np.eye(H.shape[0]))
@@ -108,7 +165,7 @@ class IceRheologyStatistics:
         # 2. JAX Autodiff Step
         # ---------------------------------------------------------
         # Reconstruct latent field z = W @ m
-        latent_z = self.W @ m_coeffs
+        latent_z = W_matrix @ m_coeffs
         
         # Define the scalar derivative function
         # We assume the transform is element-wise: physical_i = f(z_i)
@@ -126,13 +183,13 @@ class IceRheologyStatistics:
         # 3. Chain Rule Projection
         # ---------------------------------------------------------
         # Effective Jacobian: Scale W rows by the local derivative
-        W_effective = self.W * d_transform[:, np.newaxis]
+        W_effective = W_matrix * d_transform[:, np.newaxis]
         
         # Project Variance: diag(W_eff @ Sigma @ W_eff.T)
         Sigma_W_T = Sigma_coeffs @ W_effective.T
-        variance_n_field = np.sum(W_effective * Sigma_W_T.T, axis=1)
+        variance_field = np.sum(W_effective * Sigma_W_T.T, axis=1)
         
-        return np.sqrt(variance_n_field)
+        return np.sqrt(variance_field)
 
     def compute_physical_metric(self, stress_fields, strain_rates, coords, smooth_radius):
         """
