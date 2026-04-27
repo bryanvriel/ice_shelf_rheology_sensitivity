@@ -113,6 +113,22 @@ def _build_optimizer(args, cfg, svi_model):
     )
 
 
+def _restore_history(extra, key, dtype, fallback_length=0):
+    if key not in extra:
+        return np.zeros(fallback_length, dtype=dtype)
+    return np.asarray(extra[key], dtype=dtype).reshape(-1)
+
+
+def _append_history(previous, current, dtype):
+    previous = np.asarray(previous, dtype=dtype).reshape(-1)
+    current = np.asarray(current, dtype=dtype).reshape(-1)
+    if previous.size == 0:
+        return current
+    if current.size == 0:
+        return previous
+    return np.concatenate((previous, current))
+
+
 def main(cfg, args):
     comm = firedrake.COMM_WORLD
     ensemble = firedrake.Ensemble(comm, 1)
@@ -227,10 +243,33 @@ def main(cfg, args):
     )
 
     opt_state = None
+    restored_logP = np.asarray([], dtype=np.float64)
+    restored_kl = np.asarray([], dtype=np.float64)
+    restored_cv_active = np.asarray([], dtype=np.int8)
     if args.restore:
         params, extra = load_params(ctx.outfile)
         opt_state = extra["opt_state"]
         loop_key = extra["key"]
+        restored_logP = _restore_history(extra, "logP", np.float64)
+        restored_kl = _restore_history(extra, "kl", np.float64)
+        if restored_logP.size != restored_kl.size:
+            raise ValueError(
+                "Cannot restore VI history because saved `logP` and `kl` "
+                f"lengths differ: {restored_logP.size} != {restored_kl.size}."
+            )
+        restored_cv_active = _restore_history(
+            extra,
+            "cv_active",
+            np.int8,
+            fallback_length=restored_logP.size,
+        )
+        if restored_cv_active.size != restored_logP.size:
+            raise ValueError(
+                "Cannot restore VI history because saved `cv_active` length "
+                f"{restored_cv_active.size} differs from `logP` length "
+                f"{restored_logP.size}."
+            )
+        mpi_print(f"Restored {restored_logP.size} previous VI history entries.")
     else:
         H_reg = H_post + ctx.cfg.vi.hess_reg * np.eye(z_map.size)
         params = svi_model.init_from_map_hessian(z_map, H_reg)
@@ -242,13 +281,20 @@ def main(cfg, args):
         opt_state = optimizer.init(params)
 
     def callback(t, logP, kl, cv_active, params, opt_state, key):
+        full_logP = _append_history(restored_logP, logP, np.float64)
+        full_kl = _append_history(restored_kl, kl, np.float64)
+        full_cv_active = _append_history(restored_cv_active, cv_active, np.int8)
         if t % 10 == 0:
-            elbo = logP[-1] - kl[-1]
-            print(f"{t:5d} | {elbo:13.6f} | {logP[-1]:13.6f} | {kl[-1]:13.6f}")
+            iteration = restored_logP.size + t
+            elbo = full_logP[-1] - full_kl[-1]
+            print(
+                f"{iteration:5d} | {elbo:13.6f} | "
+                f"{full_logP[-1]:13.6f} | {full_kl[-1]:13.6f}"
+            )
         extra = {
-            "logP": logP,
-            "kl": kl,
-            "cv_active": cv_active,
+            "logP": full_logP,
+            "kl": full_kl,
+            "cv_active": full_cv_active,
             "opt_state": opt_state,
             "key": key,
             "metadata": metadata,
@@ -271,13 +317,16 @@ def main(cfg, args):
     )
     if rank == 0:
         # Only rank 0 owns the populated histories and updated optimizer state.
+        full_logP = _append_history(restored_logP, logP, np.float64)
+        full_kl = _append_history(restored_kl, kl, np.float64)
+        full_cv_active = _append_history(restored_cv_active, cv_active, np.int8)
         save_params(
             ctx.outfile,
             params,
             extra={
-                "logP": logP,
-                "kl": kl,
-                "cv_active": cv_active,
+                "logP": full_logP,
+                "kl": full_kl,
+                "cv_active": full_cv_active,
                 "opt_state": opt_state,
                 "key": loop_key,
                 "metadata": metadata,
