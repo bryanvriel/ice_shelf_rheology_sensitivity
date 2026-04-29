@@ -1,5 +1,7 @@
 #-*- coding: utf-8 -*-
 
+from collections.abc import Iterable
+
 import numpy as np
 from scipy.interpolate import BSpline
 from scipy.linalg import block_diag, solve_triangular
@@ -9,7 +11,6 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 import equinox as eqx
-import cryogen
 
 from .config_utilities import primary_penalty, validate_cfg
 from .file_utilities import make_matrix_filename
@@ -107,6 +108,56 @@ def make_spd(
     w = np.linalg.eigvalsh(0.5 * (M + M.T))
     shift = max(0.0, -w[0] + jitter_init)
     return M + shift * np.eye(M.shape[0])
+
+
+def _penalty_terms(penalty) -> tuple[float, ...]:
+    if isinstance(penalty, Iterable) and not isinstance(penalty, (str, bytes)):
+        terms = tuple(penalty)
+        if len(terms) == 0:
+            raise ValueError("penalty sequence must not be empty.")
+        return terms
+    return (penalty,)
+
+
+def build_regularization_matrix_dict(penalty, data, col_mask=None):
+    if "Gx" in data.keys() and "Gy" in data.keys():
+        G, Gx, Gy = [data[key] for key in ("G", "Gx", "Gy")]
+    else:
+        G = data["G"]
+        Gx = Gy = None
+
+    return build_regularization_matrix(penalty, G, Gx=Gx, Gy=Gy, col_mask=col_mask)
+
+
+def build_regularization_matrix(penalty, G, Gx=None, Gy=None, col_mask=None):
+    if col_mask is not None:
+        G = G[:, col_mask]
+
+    terms = _penalty_terms(penalty)
+    S = terms[0] * np.eye(G.shape[1])
+
+    if Gx is not None:
+        if len(terms) < 2:
+            raise ValueError("gradient regularization requires at least two penalties.")
+        if Gy is None:
+            raise ValueError("Gy must be provided when Gx is provided.")
+        if col_mask is not None:
+            Gx, Gy = [array[:, col_mask] for array in (Gx, Gy)]
+        S += terms[1] * (np.dot(Gx.T, Gx) + np.dot(Gy.T, Gy))
+
+    if len(terms) == 3:
+        S += terms[2] * np.dot(G.T, G)
+
+    return S
+
+
+def build_lambda_precision(Lambda_2x2, n_coeffs1, n_coeffs2):
+    I_1 = np.eye(n_coeffs1)
+    I_2 = np.eye(n_coeffs2)
+
+    if n_coeffs1 == n_coeffs2:
+        return np.kron(Lambda_2x2, I_1)
+    return block_diag(Lambda_2x2[0, 0] * I_1, Lambda_2x2[1, 1] * I_2)
 
 
 def mvn_nll(z: jnp.ndarray, S: jnp.ndarray) -> float:
@@ -443,7 +494,7 @@ class SingleFieldMatrix(eqx.Module):
         self.M, self.N = G_np.shape
 
         # Build regularization matrix (prior precision)
-        S_np = cryogen.build_regularization_matrix_dict(
+        S_np = build_regularization_matrix_dict(
             penalty, matrix_data,
         )
 
@@ -557,7 +608,7 @@ class RheologyFieldLambdaMatrix(eqx.Module):
         }
 
         # Build precision matrix
-        self.S = cryogen.build_lambda_precision(Lambda, self.N_B, self.N_n)
+        self.S = build_lambda_precision(Lambda, self.N_B, self.N_n)
 
 
     @eqx.filter_jit
