@@ -3,9 +3,42 @@ from __future__ import annotations
 from typing import Sequence
 
 import numpy as np
+from scipy.interpolate import interp1d as sp_interp1d
 
 import firedrake
-from cryogen import interpolate as cryogen_interpolate
+import jax.numpy as jnp
+from jax.scipy.ndimage import map_coordinates
+
+
+def _interp2d(array, coords, coords_interp, order=1):
+    x, y = coords
+    x_interp, y_interp = coords_interp
+
+    dx = x[1] - x[0]
+    dy = y[1] - y[0]
+    row = (y_interp.ravel() - y[0]) / dy
+    col = (x_interp.ravel() - x[0]) / dx
+    im_coords = jnp.vstack((row, col))
+
+    values = map_coordinates(
+        array,
+        im_coords,
+        order=order,
+        mode="nearest",
+    )
+
+    return values.reshape(x_interp.shape)
+
+
+def _interp1d(array, x, x_interp, order=1):
+    spl = sp_interp1d(x, array, kind=order, bounds_error=False, fill_value="extrapolate")
+    return spl(x_interp)
+
+
+def _interp(array, coords, interp_coords, order=1):
+    if len(coords) == 2:
+        return _interp2d(array, coords, interp_coords, order=order)
+    return _interp1d(array, coords[0], interp_coords[0], order=order)
 
 
 def _interpolated_coordinate_values(function_space) -> np.ndarray:
@@ -79,12 +112,12 @@ def interpolate_grid_to_mesh_array(
         )
 
     if grid.ndim == spatial_ndim:
-        return cryogen_interpolate.interp(grid, grid_coords, mesh_coords)
+        return _interp(grid, grid_coords, mesh_coords)
 
     if grid.ndim == spatial_ndim + 1:
         return np.column_stack(
             [
-                cryogen_interpolate.interp(grid[i], grid_coords, mesh_coords)
+                _interp(grid[i], grid_coords, mesh_coords)
                 for i in range(grid.shape[0])
             ]
         )
