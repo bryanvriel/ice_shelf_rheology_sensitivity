@@ -244,6 +244,89 @@ def _vector_metrics(pred: np.ndarray, obs: np.ndarray) -> dict[str, Any]:
     }
 
 
+def _error_metrics(
+    errors: np.ndarray,
+    reference: np.ndarray,
+    *,
+    signed: bool,
+) -> dict[str, float]:
+    errors = np.asarray(errors, dtype=float).reshape(-1)
+    reference = np.asarray(reference, dtype=float).reshape(-1)
+    if errors.shape != reference.shape:
+        raise ValueError(
+            f"Mismatched error/reference shapes {errors.shape} and {reference.shape}."
+        )
+
+    if errors.size == 0:
+        center_key = "bias" if signed else "mean"
+        return {
+            "rmse": np.nan,
+            "mae": np.nan,
+            center_key: np.nan,
+            "max_abs": np.nan,
+            "relative_l2": np.nan,
+        }
+
+    abs_errors = np.abs(errors)
+    reference_norm = np.linalg.norm(reference)
+    center_key = "bias" if signed else "mean"
+    return {
+        "rmse": float(np.sqrt(np.mean(errors**2))),
+        "mae": float(np.mean(abs_errors)),
+        center_key: float(np.mean(errors)),
+        "max_abs": float(np.max(abs_errors)),
+        "relative_l2": float(np.linalg.norm(errors) / reference_norm)
+        if reference_norm > 0.0
+        else np.nan,
+    }
+
+
+def _flow_direction_metrics(
+    pred: np.ndarray,
+    obs: np.ndarray,
+    *,
+    speed_floor: float = 0.0,
+) -> dict[str, Any]:
+    pred = np.asarray(pred, dtype=float)
+    obs = np.asarray(obs, dtype=float)
+    if pred.shape != obs.shape:
+        raise ValueError(f"Mismatched vector shapes {pred.shape} and {obs.shape}.")
+    if pred.ndim != 2:
+        raise ValueError(
+            f"Expected vector arrays with shape (n_samples, n_components); got {pred.shape}."
+        )
+    if pred.shape[0] == 0:
+        raise ValueError("Cannot compute error metrics on an empty array.")
+    if speed_floor < 0.0:
+        raise ValueError("speed_floor must be non-negative.")
+
+    diff = pred - obs
+    speed_obs = np.linalg.norm(obs, axis=1)
+    flow_mask = speed_obs > speed_floor
+    obs_flow = obs[flow_mask]
+    diff_flow = diff[flow_mask]
+    speed_ref = speed_obs[flow_mask]
+
+    if speed_ref.size == 0:
+        empty = np.array([], dtype=float)
+        return {
+            "n_valid_flow_nodes": 0,
+            "along_flow": _error_metrics(empty, empty, signed=True),
+            "cross_flow": _error_metrics(empty, empty, signed=False),
+        }
+
+    unit_obs = obs_flow / speed_ref[:, None]
+    along_flow = np.einsum("ij,ij->i", diff_flow, unit_obs)
+    cross_flow_vec = diff_flow - along_flow[:, None] * unit_obs
+    cross_flow = np.linalg.norm(cross_flow_vec, axis=1)
+
+    return {
+        "n_valid_flow_nodes": int(speed_ref.size),
+        "along_flow": _error_metrics(along_flow, speed_ref, signed=True),
+        "cross_flow": _error_metrics(cross_flow, speed_ref, signed=False),
+    }
+
+
 def _component_names(n_components: int) -> list[str]:
     if n_components == 1:
         return ["u"]
@@ -393,6 +476,7 @@ def _compute_metrics_from_mesh_epochs(
         }
         speed_pred = np.linalg.norm(pred_valid, axis=1)
         speed_obs = np.linalg.norm(obs_valid, axis=1)
+        epoch_flow_metrics = _flow_direction_metrics(pred_valid, obs_valid)
         per_epoch.append(
             {
                 "prediction_epoch": prediction_epoch_ids[k],
@@ -400,6 +484,9 @@ def _compute_metrics_from_mesh_epochs(
                 "n_valid_nodes": int(pred_valid.shape[0]),
                 "vector": _vector_metrics(pred_valid, obs_valid),
                 "speed": _scalar_metrics(speed_pred, speed_obs),
+                "along_flow": epoch_flow_metrics["along_flow"],
+                "cross_flow": epoch_flow_metrics["cross_flow"],
+                "n_valid_flow_nodes": epoch_flow_metrics["n_valid_flow_nodes"],
                 "components": epoch_components,
             }
         )
@@ -412,6 +499,7 @@ def _compute_metrics_from_mesh_epochs(
     }
     aggregate_speed_pred = np.linalg.norm(aggregate_pred, axis=1)
     aggregate_speed_obs = np.linalg.norm(aggregate_obs, axis=1)
+    aggregate_flow_metrics = _flow_direction_metrics(aggregate_pred, aggregate_obs)
 
     return {
         "group": group,
@@ -427,6 +515,9 @@ def _compute_metrics_from_mesh_epochs(
         "aggregate": {
             "vector": _vector_metrics(aggregate_pred, aggregate_obs),
             "speed": _scalar_metrics(aggregate_speed_pred, aggregate_speed_obs),
+            "along_flow": aggregate_flow_metrics["along_flow"],
+            "cross_flow": aggregate_flow_metrics["cross_flow"],
+            "n_valid_flow_nodes": aggregate_flow_metrics["n_valid_flow_nodes"],
             "components": aggregate_components,
         },
         "per_epoch": per_epoch,
