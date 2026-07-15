@@ -12,6 +12,7 @@ import sys
 import jax
 import re
 import os
+from pathlib import Path
 
 from jbao.utils import DictToStruct
 from typing import Any, Dict, Tuple
@@ -76,7 +77,19 @@ def common_parse(include_cfg: bool = True) -> argparse.ArgumentParser:
         default=None,
         help="Override the default observation data filename. Default: None.",
     )
+    parser.add_argument(
+        "--prep-cfg",
+        action="store",
+        type=str,
+        default=None,
+        dest="prep_cfg",
+        help=(
+            "Prep config used to resolve hashed observation data filenames. "
+            "Default: sibling *_prep.toml when available."
+        ),
+    )
     return parser
+
 
 def data_filename(cfg, args):
     outdir = cfg.output_dir
@@ -88,12 +101,27 @@ def data_filename(cfg, args):
     elif args.amp == "None":
         return os.path.join(outdir, "data_inverse.h5")
     else:
-        loc = f"{args.loc}"
-        amp = f"amp-{args.amp}"
-        seed = f"seed{cfg.data.seed:03d}"
-        return os.path.join(
-            outdir,
-            f"data_inverse_perturbed_{loc}_{amp}_{seed}.h5",
+        prep_cfg = resolve_prep_cfg_for_data(args, cfg=cfg)
+        filename_cfg = prep_cfg if prep_cfg is not None else cfg
+        seed = _data_seed(
+            prep_cfg,
+            default=_data_seed(cfg, default=0),
+        )
+        include_noise_hash = _has_noise_config(filename_cfg)
+        if include_noise_hash:
+            return make_perturbed_data_filename(
+                filename_cfg,
+                args.loc,
+                args.amp,
+                seed,
+                include_noise_hash=True,
+            )
+        return make_perturbed_data_filename(
+            cfg,
+            args.loc,
+            args.amp,
+            seed,
+            include_noise_hash=False,
         )
 
 
@@ -475,9 +503,141 @@ def _resolve_data_source(data_file=None, data_label=None) -> str | None:
     return os.path.splitext(os.path.basename(data_file))[0]
 
 
+def _cfg_to_dict(cfg: DictToStruct | dict | None) -> dict:
+    if cfg is None:
+        return {}
+    if isinstance(cfg, DictToStruct):
+        return cfg.todict()
+    if hasattr(cfg, "todict"):
+        return cfg.todict()
+    if isinstance(cfg, dict):
+        return deepcopy(cfg)
+    return {}
+
+
+def _cfg_value(cfg: DictToStruct | dict | None, key: str, default=None):
+    if cfg is None:
+        return default
+    if isinstance(cfg, dict):
+        return cfg.get(key, default)
+    return getattr(cfg, key, default)
+
+
+def _cfg_data_value(cfg: DictToStruct | dict | None, key: str, default=None):
+    data = _cfg_value(cfg, "data", None)
+    if data is None:
+        return default
+    if isinstance(data, dict):
+        return data.get(key, default)
+    return getattr(data, key, default)
+
+
+def _data_seed(cfg: DictToStruct | dict | None, default=0) -> int:
+    return int(_cfg_data_value(cfg, "seed", default))
+
+
+def _has_noise_config(cfg: DictToStruct | dict | None) -> bool:
+    return isinstance(_cfg_to_dict(cfg).get("noise"), dict)
+
+
+def _resolve_cfg_path(path: str | Path, *, args=None) -> Path:
+    candidate = Path(path).expanduser()
+    candidates = [candidate]
+    if not candidate.is_absolute():
+        cfg_path = getattr(args, "cfg", None)
+        if cfg_path:
+            candidates.append(Path(cfg_path).expanduser().parent / candidate)
+    for item in candidates:
+        if item.exists():
+            return item
+    return candidate
+
+
+def _sibling_prep_cfg_path(args) -> Path | None:
+    cfg_path = getattr(args, "cfg", None)
+    if not cfg_path:
+        return None
+    path = Path(cfg_path).expanduser()
+    if path.suffix != ".toml":
+        return None
+    if path.stem.endswith("_prep"):
+        candidate = path
+    else:
+        candidate = path.with_name(f"{path.stem}_prep{path.suffix}")
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def noise_config_payload(cfg: DictToStruct | dict) -> dict:
+    data = _cfg_to_dict(cfg)
+    if not isinstance(data.get("noise"), dict):
+        raise ValueError("Config does not define a `noise` table.")
+
+    add_noise = bool(data.get("add_noise", True))
+    if not add_noise:
+        return {"add_noise": False}
+    return {
+        "add_noise": True,
+        "noise": data["noise"],
+    }
+
+
+def noise_config_json(cfg: DictToStruct | dict) -> str:
+    payload = _canonicalize(noise_config_payload(cfg))
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+
+
 # -------------------------
 # Public API
 # -------------------------
+
+
+def make_noise_digest(cfg: DictToStruct | dict, digest_bytes: int = 4) -> str:
+    return _short_hash(noise_config_payload(cfg), digest_bytes=digest_bytes)
+
+
+def make_noise_token(cfg: DictToStruct | dict) -> str:
+    return f"noise-{make_noise_digest(cfg)}"
+
+
+def make_perturbed_data_filename(
+    cfg: DictToStruct | dict,
+    loc,
+    amp,
+    seed,
+    *,
+    include_noise_hash: bool = True,
+) -> str:
+    outdir = _cfg_value(cfg, "output_dir")
+    if outdir is None:
+        raise ValueError("Config does not define `output_dir`.")
+
+    stem = f"data_inverse_perturbed_{loc}_amp-{amp}_seed{int(seed):03d}"
+    if include_noise_hash:
+        stem = f"{stem}_{make_noise_token(cfg)}"
+    return os.path.join(outdir, f"{stem}.h5")
+
+
+def resolve_prep_cfg_for_data(args, cfg=None) -> DictToStruct | None:
+    import schurflow.config_utilities as cu
+
+    prep_cfg = getattr(args, "prep_cfg", None)
+    if prep_cfg:
+        resolved = cu.load_cfg_file(_resolve_cfg_path(prep_cfg, args=args))
+        if _has_noise_config(resolved) or not _has_noise_config(cfg):
+            return resolved
+        return cfg
+
+    sibling = _sibling_prep_cfg_path(args)
+    if sibling is not None:
+        resolved = cu.load_cfg_file(sibling)
+        if _has_noise_config(resolved) or not _has_noise_config(cfg):
+            return resolved
+
+    if _has_noise_config(cfg):
+        return cfg
+    return None
 
 
 def make_data_digest(

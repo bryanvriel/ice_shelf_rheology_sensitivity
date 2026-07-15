@@ -8,6 +8,16 @@ filter_data = false
 u_sigma = 4.0
 v_sigma = 4.0
 
+[noise.velocity]
+sigma_sec = 5.0
+sigma_amp = 5.0
+sigma_phase_days = 1.25
+wavelength = 2.5e3
+
+[noise.thickness]
+amplitude = 50.0
+wavelength = 10.0e3
+
 [sim]
 meshfile = "aux/simplified_1km.msh"
 

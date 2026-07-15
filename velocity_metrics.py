@@ -281,6 +281,125 @@ def _error_metrics(
     }
 
 
+def _as_velocity_components_last(
+    values: Any,
+    *,
+    component_axis: int | None = None,
+) -> np.ndarray:
+    if hasattr(values, "dat") and hasattr(values.dat, "data_ro"):
+        values = values.dat.data_ro
+
+    array = np.asarray(values, dtype=float)
+    if array.ndim < 2:
+        raise ValueError(
+            "Velocity fields must include a component axis; expected shapes like "
+            "(n_nodes, 2), (2, Ny, Nx), or (Ny, Nx, 2)."
+        )
+
+    if component_axis is not None:
+        component_axis = int(component_axis)
+        if component_axis < 0:
+            component_axis += array.ndim
+        if component_axis < 0 or component_axis >= array.ndim:
+            raise ValueError(
+                f"component_axis={component_axis} is outside array shape {array.shape}."
+            )
+        if array.shape[component_axis] != 2:
+            raise ValueError(
+                f"Expected component_axis={component_axis} to have length 2; "
+                f"got shape {array.shape}."
+            )
+        return np.moveaxis(array, component_axis, -1)
+
+    if array.ndim == 2:
+        if array.shape[-1] == 2:
+            return array
+        if array.shape[0] == 2:
+            return np.moveaxis(array, 0, -1)
+    elif array.ndim == 3:
+        if array.shape[0] == 2:
+            return np.moveaxis(array, 0, -1)
+        if array.shape[-1] == 2:
+            return array
+        if array.shape[1] == 2:
+            return np.moveaxis(array, 1, -1)
+    else:
+        if array.shape[1] == 2:
+            return np.moveaxis(array, 1, -1)
+        if array.shape[-1] == 2:
+            return array
+        if array.shape[0] == 2:
+            return np.moveaxis(array, 0, -1)
+
+    raise ValueError(
+        "Could not identify a 2-component velocity axis; expected shapes like "
+        "(n_nodes, 2), (2, Ny, Nx), (Ny, Nx, 2), or (Nt, 2, Ny, Nx). "
+        f"Got {array.shape}."
+    )
+
+
+def compute_flow_direction_errors(
+    u_pred: Any,
+    u_obs: Any,
+    *,
+    speed_floor: float = 0.0,
+    component_axis: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute signed along-flow and nonnegative cross-flow velocity errors.
+
+    `u_pred` and `u_obs` can be Firedrake vector `Function`s, mesh arrays shaped
+    `(n_nodes, 2)`, or grid arrays with the component axis first or last.
+    Set `component_axis` for ambiguous small arrays. Points where the observed
+    speed is at or below `speed_floor` are returned as NaN because the observed
+    flow direction is undefined there.
+    """
+    if speed_floor < 0.0:
+        raise ValueError("speed_floor must be non-negative.")
+
+    pred = _as_velocity_components_last(u_pred, component_axis=component_axis)
+    obs = _as_velocity_components_last(u_obs, component_axis=component_axis)
+    return _flow_errors_from_components_last(pred, obs, speed_floor=speed_floor)
+
+
+def _flow_errors_from_components_last(
+    pred: np.ndarray,
+    obs: np.ndarray,
+    *,
+    speed_floor: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    if speed_floor < 0.0:
+        raise ValueError("speed_floor must be non-negative.")
+
+    pred = np.asarray(pred, dtype=float)
+    obs = np.asarray(obs, dtype=float)
+    if pred.shape != obs.shape:
+        raise ValueError(f"Mismatched velocity shapes {pred.shape} and {obs.shape}.")
+    if pred.ndim < 2:
+        raise ValueError(
+            "Velocity arrays must include at least one spatial axis and one "
+            f"component axis; got {pred.shape}."
+        )
+
+    diff = pred - obs
+    speed_obs = np.linalg.norm(obs, axis=-1)
+    finite_mask = np.isfinite(pred).all(axis=-1) & np.isfinite(obs).all(axis=-1)
+    flow_mask = finite_mask & (speed_obs > speed_floor)
+
+    e_parallel = np.full(speed_obs.shape, np.nan, dtype=float)
+    e_perp = np.full(speed_obs.shape, np.nan, dtype=float)
+    if not np.any(flow_mask):
+        return e_parallel, e_perp
+
+    unit_obs = obs[flow_mask] / speed_obs[flow_mask, None]
+    along = np.einsum("ij,ij->i", diff[flow_mask], unit_obs)
+    cross_vec = diff[flow_mask] - along[:, None] * unit_obs
+
+    e_parallel[flow_mask] = along
+    e_perp[flow_mask] = np.linalg.norm(cross_vec, axis=1)
+    return e_parallel, e_perp
+
+
 def _flow_direction_metrics(
     pred: np.ndarray,
     obs: np.ndarray,
@@ -297,14 +416,13 @@ def _flow_direction_metrics(
         )
     if pred.shape[0] == 0:
         raise ValueError("Cannot compute error metrics on an empty array.")
-    if speed_floor < 0.0:
-        raise ValueError("speed_floor must be non-negative.")
-
-    diff = pred - obs
+    along_flow, cross_flow = _flow_errors_from_components_last(
+        pred,
+        obs,
+        speed_floor=speed_floor,
+    )
     speed_obs = np.linalg.norm(obs, axis=1)
-    flow_mask = speed_obs > speed_floor
-    obs_flow = obs[flow_mask]
-    diff_flow = diff[flow_mask]
+    flow_mask = np.isfinite(along_flow) & np.isfinite(cross_flow)
     speed_ref = speed_obs[flow_mask]
 
     if speed_ref.size == 0:
@@ -315,15 +433,10 @@ def _flow_direction_metrics(
             "cross_flow": _error_metrics(empty, empty, signed=False),
         }
 
-    unit_obs = obs_flow / speed_ref[:, None]
-    along_flow = np.einsum("ij,ij->i", diff_flow, unit_obs)
-    cross_flow_vec = diff_flow - along_flow[:, None] * unit_obs
-    cross_flow = np.linalg.norm(cross_flow_vec, axis=1)
-
     return {
         "n_valid_flow_nodes": int(speed_ref.size),
-        "along_flow": _error_metrics(along_flow, speed_ref, signed=True),
-        "cross_flow": _error_metrics(cross_flow, speed_ref, signed=False),
+        "along_flow": _error_metrics(along_flow[flow_mask], speed_ref, signed=True),
+        "cross_flow": _error_metrics(cross_flow[flow_mask], speed_ref, signed=False),
     }
 
 
@@ -809,6 +922,7 @@ def compute_velocity_error_metrics(
 
 __all__ = [
     "VelocityErrorMetricsEvaluator",
+    "compute_flow_direction_errors",
     "compute_velocity_error_metrics",
     "compute_velocity_error_metrics_on_mesh",
 ]
